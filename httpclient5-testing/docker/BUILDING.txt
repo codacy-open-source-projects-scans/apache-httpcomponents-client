@@ -1,0 +1,39 @@
+Building Docker containers for compatibility tests
+========================================================
+
+= Apache HTTPD 2.4 image
+
+Remark: omit sudo command if executing as root
+---
+sudo docker build -t httpclient-tests-httpd apache-httpd
+---
+
+= Squid 3.3 image
+
+Remark: omit sudo command if executing as root
+---
+sudo docker build -t httpclient-tests-squid squid
+---
+
+= Start containers
+
+---
+sudo docker-compose up
+---
+
+= SSL key / cert material (optional)
+
+# Issue a certificate request
+---
+openssl req -config openssl.cnf -new -nodes -sha256 -days 36500  \
+ -subj '/O=Apache Software Foundation/OU=HttpComponents Project/CN=test-httpd/emailAddress=dev@hc.apache.org/' \
+ -keyout server-key.pem -out server-certreq.pem
+---
+# Verify the request
+---
+openssl req -in server-certreq.pem -text -noout
+---
+# Sign new certificate with the test CA key
+---
+openssl ca -config openssl.cnf -days 36500 -out server-cert.pem -in server-certreq.pem && rm server-certreq.pem
+---

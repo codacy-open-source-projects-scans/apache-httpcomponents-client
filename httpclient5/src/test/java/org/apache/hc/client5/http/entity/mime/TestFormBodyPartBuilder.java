@@ -1,0 +1,168 @@
+/*
+ * ====================================================================
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ * ====================================================================
+ *
+ * This software consists of voluntary contributions made by many
+ * individuals on behalf of the Apache Software Foundation.  For more
+ * information on the Apache Software Foundation, please see
+ * <http://www.apache.org/>.
+ *
+ */
+
+package org.apache.hc.client5.http.entity.mime;
+
+import java.io.File;
+import java.util.Arrays;
+import java.util.List;
+
+import org.apache.hc.core5.http.ContentType;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+class TestFormBodyPartBuilder {
+
+    @Test
+    void testBuildBodyPartBasics() {
+        final StringBody stringBody = new StringBody("stuff", ContentType.TEXT_PLAIN);
+        final FormBodyPart bodyPart = FormBodyPartBuilder.create()
+                .setName("blah")
+                .setBody(stringBody)
+                .build();
+        Assertions.assertNotNull(bodyPart);
+        Assertions.assertEquals("blah", bodyPart.getName());
+        Assertions.assertEquals(stringBody, bodyPart.getBody());
+        final Header header = bodyPart.getHeader();
+        Assertions.assertNotNull(header);
+        assertFields(Arrays.asList(
+                        new MimeField("Content-Disposition", "form-data; name=\"blah\""),
+                        new MimeField("Content-Type", "text/plain; charset=UTF-8")),
+                header.getFields());
+    }
+
+    @Test
+    void testBuildBodyPartMultipleBuilds() {
+        final StringBody stringBody = new StringBody("stuff", ContentType.TEXT_PLAIN);
+        final FormBodyPartBuilder builder = FormBodyPartBuilder.create();
+        final FormBodyPart bodyPart1 = builder
+                .setName("blah")
+                .setBody(stringBody)
+                .build();
+        Assertions.assertNotNull(bodyPart1);
+        Assertions.assertEquals("blah", bodyPart1.getName());
+        Assertions.assertEquals(stringBody, bodyPart1.getBody());
+        final Header header1 = bodyPart1.getHeader();
+        Assertions.assertNotNull(header1);
+        assertFields(Arrays.asList(
+                        new MimeField("Content-Disposition", "form-data; name=\"blah\""),
+                        new MimeField("Content-Type", "text/plain; charset=UTF-8")),
+                header1.getFields());
+        final FileBody fileBody = new FileBody(new File("/path/stuff.bin"), ContentType.DEFAULT_BINARY);
+        final FormBodyPart bodyPart2 = builder
+                .setName("yada")
+                .setBody(fileBody)
+                .build();
+
+        Assertions.assertNotNull(bodyPart2);
+        Assertions.assertEquals("yada", bodyPart2.getName());
+        Assertions.assertEquals(fileBody, bodyPart2.getBody());
+        final Header header2 = bodyPart2.getHeader();
+        Assertions.assertNotNull(header2);
+        assertFields(Arrays.asList(
+                        new MimeField("Content-Disposition", "form-data; name=\"yada\"; filename=\"stuff.bin\""),
+                        new MimeField("Content-Type", "application/octet-stream")),
+                header2.getFields());
+    }
+
+    @Test
+    void testBuildBodyPartCustomHeaders() {
+        final StringBody stringBody = new StringBody("stuff", ContentType.TEXT_PLAIN);
+        final FormBodyPartBuilder builder = FormBodyPartBuilder.create("blah", stringBody);
+        final FormBodyPart bodyPart1 = builder
+                .addField("header1", "blah")
+                .addField("header3", "blah")
+                .addField("header3", "blah")
+                .addField("header3", "blah")
+                .addField("header3", "blah")
+                .addField("header3", "blah")
+                .build();
+
+        Assertions.assertNotNull(bodyPart1);
+        final Header header1 = bodyPart1.getHeader();
+        Assertions.assertNotNull(header1);
+
+        assertFields(Arrays.asList(
+                new MimeField("header1", "blah"),
+                new MimeField("header3", "blah"),
+                new MimeField("header3", "blah"),
+                new MimeField("header3", "blah"),
+                new MimeField("header3", "blah"),
+                new MimeField("header3", "blah"),
+                new MimeField("Content-Disposition", "form-data; name=\"blah\""),
+                new MimeField("Content-Type", "text/plain; charset=UTF-8")),
+                header1.getFields());
+
+        final FormBodyPart bodyPart2 = builder
+                .setField("header2", "yada")
+                .removeFields("header3")
+                .build();
+
+        Assertions.assertNotNull(bodyPart2);
+        final Header header2 = bodyPart2.getHeader();
+        Assertions.assertNotNull(header2);
+
+        assertFields(Arrays.asList(
+                        new MimeField("header1", "blah"),
+                        new MimeField("header2", "yada"),
+                        new MimeField("Content-Disposition", "form-data; name=\"blah\""),
+                        new MimeField("Content-Type", "text/plain; charset=UTF-8")),
+                header2.getFields());
+
+        final FormBodyPart bodyPart3 = builder
+                .addField("Content-Disposition", "disposition stuff")
+                .addField("Content-Type", "type stuff")
+                .addField("Content-Transfer-Encoding", "encoding stuff")
+                .build();
+
+        Assertions.assertNotNull(bodyPart3);
+        final Header header3 = bodyPart3.getHeader();
+        Assertions.assertNotNull(header3);
+
+        assertFields(Arrays.asList(
+                        new MimeField("header1", "blah"),
+                        new MimeField("header2", "yada"),
+                        new MimeField("Content-Disposition", "disposition stuff"),
+                        new MimeField("Content-Type", "type stuff"),
+                        new MimeField("Content-Transfer-Encoding", "encoding stuff")),
+                header3.getFields());
+
+    }
+
+    private static void assertFields(final List<MimeField> expected, final List<MimeField> result) {
+        Assertions.assertNotNull(result);
+        Assertions.assertEquals(expected.size(), result.size());
+        for (int i = 0; i < expected.size(); i++) {
+            final MimeField expectedField = expected.get(i);
+            final MimeField resultField = result.get(i);
+            Assertions.assertNotNull(resultField);
+            Assertions.assertEquals(expectedField.getName(), resultField.getName());
+            Assertions.assertEquals(expectedField.getBody(), resultField.getBody());
+        }
+    }
+
+}
