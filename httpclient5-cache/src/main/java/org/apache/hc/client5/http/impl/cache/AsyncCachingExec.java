@@ -523,7 +523,9 @@ class AsyncCachingExec extends CachingExecBase implements AsyncExecChainHandler 
                 return asyncExecCallback.handleResponse(backendResponse, entityDetails);
             }
 
+            final HttpCacheContext context = HttpCacheContext.cast(scope.clientContext);
             final ResponseCacheControl responseCacheControl = CacheControlHeaderParser.INSTANCE.parse(backendResponse);
+            context.setResponseCacheControl(responseCacheControl);
             final boolean cacheable = responseCachingPolicy.isResponseCacheable(responseCacheControl, request, backendResponse);
             if (cacheable) {
                 storeRequestIfModifiedSinceFor304Response(request, backendResponse);
@@ -875,7 +877,7 @@ class AsyncCachingExec extends CachingExecBase implements AsyncExecChainHandler 
                             public void completed(final CacheHit updated) {
                                 try {
                                     final SimpleHttpResponse cacheResponse = generateCachedResponse(request, updated.entry, responseDate);
-                                    context.setCacheEntry(hit.entry);
+                                    context.setCacheEntry(updated.entry);
                                     triggerResponse(cacheResponse, scope, asyncExecCallback);
                                 } catch (final ResourceIOException ex) {
                                     asyncExecCallback.failed(ex);
