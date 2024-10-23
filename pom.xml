@@ -62,7 +62,7 @@
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
-    <httpcore.version>5.3</httpcore.version>
+    <httpcore.version>5.3.1</httpcore.version>
     <log4j.version>2.23.1</log4j.version>
     <brotli.version>0.1.2</brotli.version>
     <conscrypt.version>2.5.2</conscrypt.version>
@@ -74,9 +74,9 @@
     <mockito.version>4.11.0</mockito.version>
     <hc.stylecheck.version>1</hc.stylecheck.version>
     <rxjava.version>2.2.21</rxjava.version>
+    <testcontainers.version>1.20.2</testcontainers.version>
     <api.comparison.version>5.3</api.comparison.version>
     <hc.animal-sniffer.signature.ignores>javax.net.ssl.SSLEngine,javax.net.ssl.SSLParameters,java.nio.ByteBuffer,java.nio.CharBuffer</hc.animal-sniffer.signature.ignores>
-    <japicmp.version>0.15.4</japicmp.version>
   </properties>
 
   <dependencyManagement>
@@ -181,6 +181,16 @@
         <artifactId>hamcrest</artifactId>
         <version>${hamcrest.version}</version>
         <scope>test</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>testcontainers</artifactId>
+        <version>${testcontainers.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.testcontainers</groupId>
+        <artifactId>junit-jupiter</artifactId>
+        <version>${testcontainers.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
