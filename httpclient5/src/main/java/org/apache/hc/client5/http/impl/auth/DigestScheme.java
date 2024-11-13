@@ -68,6 +68,7 @@ import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.net.PercentCodec;
 import org.apache.hc.core5.util.Args;
 import org.apache.hc.core5.util.CharArrayBuffer;
+import org.apache.hc.core5.util.TextUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -253,6 +254,16 @@ public class DigestScheme implements AuthScheme, Serializable {
         if (this.paramMap.get("nonce") == null) {
             throw new AuthenticationException("missing nonce");
         }
+
+        if (context != null) {
+            final HttpClientContext clientContext = HttpClientContext.cast(context);
+            final String nextNonce = clientContext.getNextNonce();
+            if (!TextUtils.isBlank(nextNonce)) {
+                this.paramMap.put("nonce", nextNonce);
+                clientContext.setNextNonce(null);
+            }
+        }
+
         return createDigestResponse(request);
     }
 
@@ -460,6 +471,7 @@ public class DigestScheme implements AuthScheme, Serializable {
             params.add(new BasicNameValuePair("qop", qop == QualityOfProtection.AUTH_INT ? "auth-int" : "auth"));
             params.add(new BasicNameValuePair("nc", nc));
             params.add(new BasicNameValuePair("cnonce", cnonce));
+            params.add(new BasicNameValuePair("rspauth", hasha2));
         }
         if (algorithm != null) {
             params.add(new BasicNameValuePair("algorithm", algorithm));
