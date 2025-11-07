@@ -28,7 +28,7 @@
   <parent>
     <groupId>org.apache.httpcomponents.client5</groupId>
     <artifactId>httpclient5-parent</artifactId>
-    <version>5.5-alpha1-SNAPSHOT</version>
+    <version>5.6-alpha2-SNAPSHOT</version>
   </parent>
   <artifactId>httpclient5-testing</artifactId>
   <name>Apache HttpClient Integration Tests</name>
@@ -78,8 +78,14 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>com.kohlschutter.junixsocket</groupId>
+      <artifactId>junixsocket-core</artifactId>
+      <scope>test</scope>
+      <type>pom</type>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
-      <artifactId>junit-jupiter-params</artifactId>
+      <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -93,7 +99,7 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>io.reactivex.rxjava2</groupId>
+      <groupId>io.reactivex.rxjava3</groupId>
       <artifactId>rxjava</artifactId>
       <scope>test</scope>
     </dependency>

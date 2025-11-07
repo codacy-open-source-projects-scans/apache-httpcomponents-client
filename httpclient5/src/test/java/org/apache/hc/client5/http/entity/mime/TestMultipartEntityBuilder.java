@@ -30,17 +30,27 @@ package org.apache.hc.client5.http.entity.mime;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hc.core5.http.ContentType;
+import org.apache.hc.core5.http.HeaderElement;
 import org.apache.hc.core5.http.NameValuePair;
+import org.apache.hc.core5.http.message.BasicHeaderValueParser;
 import org.apache.hc.core5.http.message.BasicNameValuePair;
+import org.apache.hc.core5.http.message.ParserCursor;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class TestMultipartEntityBuilder {
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void testBasics() {
@@ -64,7 +74,7 @@ class TestMultipartEntityBuilder {
     }
 
     @Test
-    void testAddBodyParts() {
+    void testAddBodyPartsFile() {
         final MultipartFormEntity entity = MultipartEntityBuilder.create()
                 .addTextBody("p1", "stuff")
                 .addBinaryBody("p2", new File("stuff"))
@@ -78,6 +88,20 @@ class TestMultipartEntityBuilder {
         Assertions.assertEquals(5, bodyParts.size());
     }
 
+    @Test
+    void testAddBodyPartsPath() throws IOException {
+        final MultipartFormEntity entity = MultipartEntityBuilder.create()
+                .addTextBody("p1", "stuff")
+                .addBinaryBody("p2", Files.createTempFile(tempDir, "test-", ".bin"))
+                .addBinaryBody("p3", new byte[]{})
+                .addBinaryBody("p4", new ByteArrayInputStream(new byte[]{}))
+                .addBinaryBody("p5", new ByteArrayInputStream(new byte[]{}), ContentType.DEFAULT_BINARY, "filename")
+                .buildEntity();
+        Assertions.assertNotNull(entity);
+        final List<MultipartPart> bodyParts = entity.getMultipart().getParts();
+        Assertions.assertNotNull(bodyParts);
+        Assertions.assertEquals(5, bodyParts.size());
+    }
 
     @Test
     void testMultipartCustomContentType() {
@@ -306,5 +330,123 @@ class TestMultipartEntityBuilder {
                 "hello \u00ce\u00ba\u00cf\u008c\u00cf\u0083\u00ce\u00bc\u00ce\u00b5!%\r\n" +
                 "--xxxxxxxxxxxxxxxxxxxxxxxx--\r\n", out.toString(StandardCharsets.ISO_8859_1.name()));
     }
+
+    @Test
+    void testRandomBoundary() {
+        final MultipartFormEntity entity = MultipartEntityBuilder.create()
+                .buildEntity();
+        final NameValuePair boundaryParam = extractBoundary(entity.getContentType(), "multipart/mixed");
+        final String boundary = boundaryParam.getValue();
+        Assertions.assertNotNull(boundary);
+        Assertions.assertEquals(56, boundary.length());
+        Assertions.assertTrue(boundary.startsWith("httpclient_boundary_"));
+        Assertions.assertTrue(boundary.substring(20).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+    }
+
+    @Test
+    void testRandomBoundaryWriteTo() throws Exception {
+        final String helloWorld = "hello world";
+        final List<NameValuePair> parameters = new ArrayList<>();
+        parameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_NAME, "test"));
+        parameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_FILENAME, helloWorld));
+        final MultipartFormEntity entity = MultipartEntityBuilder.create()
+                .setStrictMode()
+                .addPart(new FormBodyPartBuilder()
+                        .setName("test")
+                        .setBody(new StringBody("hello world", ContentType.TEXT_PLAIN))
+                        .addField("Content-Disposition", "multipart/form-data", parameters)
+                        .build())
+                .buildEntity();
+
+        final NameValuePair boundaryParam = extractBoundary(entity.getContentType(), "multipart/form-data");
+        final String boundary = boundaryParam.getValue();
+        Assertions.assertNotNull(boundary);
+        Assertions.assertEquals(56, boundary.length());
+        Assertions.assertTrue(boundary.startsWith("httpclient_boundary_"));
+        Assertions.assertTrue(boundary.substring(20).matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        entity.writeTo(out);
+        out.close();
+        Assertions.assertEquals("--" + boundary + "\r\n" +
+                "Content-Disposition: multipart/form-data; name=\"test\"; filename=\"hello world\"\r\n" +
+                "Content-Type: text/plain; charset=UTF-8\r\n" +
+                "\r\n" +
+                helloWorld + "\r\n" +
+                "--" + boundary + "--\r\n", out.toString(StandardCharsets.US_ASCII.name()));
+    }
+
+    private NameValuePair extractBoundary(final String contentType, final String expectedName) {
+        final BasicHeaderValueParser parser = BasicHeaderValueParser.INSTANCE;
+        final ParserCursor cursor = new ParserCursor(0, contentType.length());
+        final HeaderElement elem = parser.parseHeaderElement(contentType, cursor);
+        Assertions.assertEquals(expectedName, elem.getName());
+        return elem.getParameterByName("boundary");
+    }
+
+    @Test
+    void testMultipartWriteToRFC7578ModeWithFilenameStarPreEncodedPassThrough() throws Exception {
+        final String body = "hi";
+        // Pre-encoded RFC 5987 value (as produced by a previous stage)
+        final String preEncoded = "UTF-8''%F0%9F%90%99_inline-%E5%9B%BE%E5%83%8F_%E6%96%87%E4%BB%B6.png";
+
+        final List<NameValuePair> parameters = new ArrayList<>();
+        parameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_NAME, "test"));
+        // Provide pre-encoded value directly to filename* param
+        parameters.add(new BasicNameValuePair(MimeConsts.FIELD_PARAM_FILENAME_START, preEncoded));
+
+        final MultipartFormEntity entity = MultipartEntityBuilder.create()
+                .setMode(HttpMultipartMode.EXTENDED)
+                .setBoundary("xxxxxxxxxxxxxxxxxxxxxxxx")
+                .addPart(new FormBodyPartBuilder()
+                        .setName("test")
+                        .setBody(new StringBody(body, ContentType.TEXT_PLAIN.withCharset(StandardCharsets.UTF_8)))
+                        .addField("Content-Disposition", "multipart/form-data", parameters)
+                        .build())
+                .buildEntity();
+
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        entity.writeTo(out);
+        out.close();
+        final String wire = out.toString(StandardCharsets.ISO_8859_1.name());
+
+        // Pass-through EXACTLY the given value (no second prefix, no %25-escaping)
+        Assertions.assertTrue(wire.contains("filename*=\"" + preEncoded + "\""));
+        Assertions.assertFalse(wire.contains("UTF-8''UTF-8%27%27"));
+        Assertions.assertFalse(wire.contains("%25F0%9F%90%99")); // octopus emoji must not be re-escaped as %25F0...
+    }
+
+    @Test
+    void testExtendedModeAddBinaryBodyAddsFilenameAndFilenameStar_NoDoubleEncoding() throws Exception {
+        // Non-ASCII filename to trigger RFC 5987 behavior
+        final String filename = "🐙_图像_文件.png";
+        // Expected percent-encoded for both filename and filename*
+        final String pct = "%F0%9F%90%99_%E5%9B%BE%E5%83%8F_%E6%96%87%E4%BB%B6.png";
+
+        final MultipartFormEntity entity = MultipartEntityBuilder.create()
+                .setMode(HttpMultipartMode.EXTENDED)
+                .setBoundary("xxxxxxxxxxxxxxxxxxxxxxxx")
+                .addBinaryBody("attachments", new byte[]{1, 2}, ContentType.IMAGE_PNG, filename)
+                .buildEntity();
+
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        entity.writeTo(out);
+        out.close();
+        final String wire = out.toString(StandardCharsets.ISO_8859_1.name());
+
+        // Base header
+        Assertions.assertTrue(wire.contains("Content-Disposition: form-data; name=\"attachments\""));
+
+        // filename param (percent-encoded for ASCII transport)
+        Assertions.assertTrue(wire.contains("filename=\"" + pct + "\""));
+
+        // filename* param (single RFC 5987 value, no double prefix / no %25-escaping)
+        Assertions.assertTrue(wire.contains("filename*=\"UTF-8''" + pct + "\""));
+
+        // Guard against regressions
+        Assertions.assertFalse(wire.contains("UTF-8''UTF-8%27%27"));
+        Assertions.assertFalse(wire.contains("%25F0%9F%90%99"));
+    }
+
 
 }

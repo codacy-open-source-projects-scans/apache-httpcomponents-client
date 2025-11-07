@@ -86,10 +86,16 @@ public class H2SharingConnPoolTest {
     @Test
     void testLeaseExistingConnectionReturned() throws Exception {
         final PoolEntry<String, HttpConnection> poolEntry = new PoolEntry<>(DEFAULT_ROUTE);
-        final H2SharingConnPool.PerRoutePool<String, HttpConnection> routePool = h2SharingPool.getPerRoutePool(DEFAULT_ROUTE);
-        routePool.track(poolEntry);
+        final HttpConnection conn = Mockito.mock(HttpConnection.class);
+        Mockito.when(conn.isOpen()).thenReturn(true);
+        poolEntry.assignConnection(conn);
 
-        final Future<PoolEntry<String, HttpConnection>> future = h2SharingPool.lease(DEFAULT_ROUTE, null, Timeout.ONE_MILLISECOND, callback);
+        final H2SharingConnPool.PerRoutePool<String, HttpConnection> routePool =
+                h2SharingPool.getPerRoutePool(DEFAULT_ROUTE);
+        routePool.track(poolEntry);
+        final Future<PoolEntry<String, HttpConnection>> future =
+                h2SharingPool.lease(DEFAULT_ROUTE, null, Timeout.ONE_MILLISECOND, callback);
+
         Assertions.assertNotNull(future);
         Assertions.assertSame(poolEntry, future.get());
 
@@ -98,8 +104,7 @@ public class H2SharingConnPoolTest {
                 Mockito.any(),
                 Mockito.any(),
                 Mockito.any());
-        Mockito.verify(callback).completed(
-                Mockito.same(poolEntry));
+        Mockito.verify(callback).completed(Mockito.same(poolEntry));
     }
 
     @Test
@@ -314,24 +319,15 @@ public class H2SharingConnPoolTest {
                 Mockito.anyBoolean());
     }
 
+    /**
+     * Same connection can only be released once.
+     * Attempting to release it again will throw: IllegalStateException("Pool entry is not present in the set of leased entries")
+     *
+     * @see org.apache.hc.core5.pool.LaxConnPool.PerRoutePool#removeLeased(PoolEntry)
+     * @see org.apache.hc.core5.pool.StrictConnPool#release(PoolEntry, boolean)
+     */
     @Test
-    void testReleaseNonReusableInCacheReturnedToPool() throws Exception {
-        final PoolEntry<String, HttpConnection> poolEntry = new PoolEntry<>(DEFAULT_ROUTE);
-        poolEntry.assignConnection(connection);
-        Mockito.when(connection.isOpen()).thenReturn(true);
-        final H2SharingConnPool.PerRoutePool<String, HttpConnection> routePool = h2SharingPool.getPerRoutePool(DEFAULT_ROUTE);
-        routePool.track(poolEntry);
-        routePool.track(poolEntry);
-
-        h2SharingPool.release(poolEntry, false);
-
-        Mockito.verify(connPool).release(
-                Mockito.same(poolEntry),
-                Mockito.eq(false));
-    }
-
-    @Test
-    void testReleaseReusableAndClosedInCacheReturnedToPool() throws Exception {
+    void testReleaseNonReusableNotInCacheReturnedToPool() throws Exception {
         final PoolEntry<String, HttpConnection> poolEntry = new PoolEntry<>(DEFAULT_ROUTE);
         poolEntry.assignConnection(connection);
         Mockito.when(connection.isOpen()).thenReturn(false);
@@ -339,11 +335,18 @@ public class H2SharingConnPoolTest {
         routePool.track(poolEntry);
         routePool.track(poolEntry);
 
-        h2SharingPool.release(poolEntry, true);
+        final AtomicReference<HttpConnection> connRef = new AtomicReference<>(connection);
+        Mockito.doAnswer(invocation -> {
+            final PoolEntry<String, HttpConnection> entry = invocation.getArgument(0);
+            if (!connRef.compareAndSet(entry.getConnection(), null)) {
+                throw new IllegalStateException("Pool entry is not present in the set of leased entries");
+            }
+            return null;
+        }).when(connPool).release(Mockito.eq(poolEntry), Mockito.anyBoolean());
 
-        Mockito.verify(connPool).release(
-                Mockito.same(poolEntry),
-                Mockito.eq(true));
+        h2SharingPool.release(poolEntry, false);
+        // for reproduce https://issues.apache.org/jira/browse/HTTPCLIENT-2379
+        Assertions.assertThrows(IllegalStateException.class, () -> h2SharingPool.release(poolEntry, false));
     }
 
     @Test

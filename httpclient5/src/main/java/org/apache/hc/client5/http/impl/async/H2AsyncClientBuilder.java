@@ -29,8 +29,6 @@ package org.apache.hc.client5.http.impl.async;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedList;
@@ -60,9 +58,11 @@ import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.auth.BasicSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.BearerSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.DigestSchemeFactory;
+import org.apache.hc.client5.http.impl.auth.ScramSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.SystemDefaultCredentialsProvider;
 import org.apache.hc.client5.http.impl.nio.MultihomeConnectionInitiator;
 import org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner;
+import org.apache.hc.client5.http.protocol.H2RequestPriority;
 import org.apache.hc.client5.http.protocol.RedirectStrategy;
 import org.apache.hc.client5.http.protocol.RequestAddCookies;
 import org.apache.hc.client5.http.protocol.RequestDefaultHeaders;
@@ -70,6 +70,7 @@ import org.apache.hc.client5.http.protocol.RequestExpectContinue;
 import org.apache.hc.client5.http.protocol.ResponseProcessCookies;
 import org.apache.hc.client5.http.routing.HttpRoutePlanner;
 import org.apache.hc.client5.http.ssl.DefaultClientTlsStrategy;
+import org.apache.hc.core5.annotation.Experimental;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.DefaultThreadFactory;
 import org.apache.hc.core5.function.Callback;
@@ -215,6 +216,8 @@ public class H2AsyncClientBuilder {
 
     private Decorator<IOSession> ioSessionDecorator;
 
+    private boolean priorityHeaderDisabled;
+
     public static H2AsyncClientBuilder create() {
         return new H2AsyncClientBuilder();
     }
@@ -308,6 +311,16 @@ public class H2AsyncClientBuilder {
      */
     public final H2AsyncClientBuilder setIoSessionDecorator(final Decorator<IOSession> ioSessionDecorator) {
         this.ioSessionDecorator = ioSessionDecorator;
+        return this;
+    }
+
+    /**
+     * Disable installing the HTTP/2 Priority header interceptor by default.
+     * @since 5.6
+     */
+    @Experimental
+    public final H2AsyncClientBuilder disableRequestPriority() {
+        this.priorityHeaderDisabled = true;
         return this;
     }
 
@@ -698,6 +711,7 @@ public class H2AsyncClientBuilder {
         return this;
     }
 
+
     /**
      * Request exec chain customization and extension.
      * <p>
@@ -738,7 +752,7 @@ public class H2AsyncClientBuilder {
         String userAgentCopy = this.userAgent;
         if (userAgentCopy == null) {
             if (systemProperties) {
-                userAgentCopy = getProperty("http.agent", null);
+                userAgentCopy = System.getProperty("http.agent", null);
             }
             if (userAgentCopy == null) {
                 userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
@@ -761,6 +775,11 @@ public class H2AsyncClientBuilder {
                 }
             }
         }
+
+        if (!priorityHeaderDisabled) {
+            b.addLast(H2RequestPriority.INSTANCE);
+        }
+
         b.addAll(
                 new H2RequestTargetHost(),
                 new RequestDefaultHeaders(defaultHeaders),
@@ -836,7 +855,7 @@ public class H2AsyncClientBuilder {
         if (!redirectHandlingDisabled) {
             RedirectStrategy redirectStrategyCopy = this.redirectStrategy;
             if (redirectStrategyCopy == null) {
-                redirectStrategyCopy = DefaultRedirectStrategy.INSTANCE;
+                redirectStrategyCopy = schemePortResolver != null ? new DefaultRedirectStrategy(schemePortResolver) : DefaultRedirectStrategy.INSTANCE;
             }
             execChainDefinition.addFirst(
                     new AsyncRedirectExec(routePlannerCopy, redirectStrategyCopy),
@@ -848,7 +867,8 @@ public class H2AsyncClientBuilder {
                 HttpProcessorBuilder.create().build(),
                 (request, context) -> pushConsumerRegistry.get(request),
                 h2Config != null ? h2Config : H2Config.DEFAULT,
-                charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT);
+                charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT,
+                ioReactorExceptionCallback != null ? ioReactorExceptionCallback : LoggingExceptionCallback.INSTANCE);
         final DefaultConnectingIOReactor ioReactor = new DefaultConnectingIOReactor(
                 ioEventHandlerFactory,
                 ioReactorConfig != null ? ioReactorConfig : IOReactorConfig.DEFAULT,
@@ -897,10 +917,11 @@ public class H2AsyncClientBuilder {
                     .register(StandardAuthScheme.BASIC, BasicSchemeFactory.INSTANCE)
                     .register(StandardAuthScheme.DIGEST, DigestSchemeFactory.INSTANCE)
                     .register(StandardAuthScheme.BEARER, BearerSchemeFactory.INSTANCE)
+                    .register(StandardAuthScheme.SCRAM_SHA_256, ScramSchemeFactory.INSTANCE)
                     .build();
         }
         Lookup<CookieSpecFactory> cookieSpecRegistryCopy = this.cookieSpecRegistry;
-        if (cookieSpecRegistryCopy == null) {
+        if (cookieSpecRegistryCopy == null && !cookieManagementDisabled) {
             cookieSpecRegistryCopy = CookieSpecSupport.createDefault();
         }
 
@@ -956,10 +977,6 @@ public class H2AsyncClientBuilder {
                 credentialsProviderCopy,
                 defaultRequestConfig,
                 closeablesCopy);
-    }
-
-    private static String getProperty(final String key, final String defaultValue) {
-        return AccessController.doPrivileged((PrivilegedAction<String>) () -> System.getProperty(key, defaultValue));
     }
 
     static class IdleConnectionEvictor implements Closeable {

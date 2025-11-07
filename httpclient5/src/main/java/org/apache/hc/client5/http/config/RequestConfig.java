@@ -27,12 +27,15 @@
 
 package org.apache.hc.client5.http.config;
 
+import java.nio.file.Path;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hc.core5.annotation.Contract;
+import org.apache.hc.core5.annotation.Experimental;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
 import org.apache.hc.core5.http.HttpHost;
+import org.apache.hc.core5.http2.priority.PriorityValue;
 import org.apache.hc.core5.util.TimeValue;
 import org.apache.hc.core5.util.Timeout;
 
@@ -63,13 +66,19 @@ public class RequestConfig implements Cloneable {
     private final boolean contentCompressionEnabled;
     private final boolean hardCancellationEnabled;
     private final boolean protocolUpgradeEnabled;
+    private final Path unixDomainSocket;
+    /**
+     * HTTP/2 Priority header value to emit when using H2+. Null means “don’t emit”.
+     */
+    private final PriorityValue h2Priority;
 
     /**
      * Intended for CDI compatibility
     */
     protected RequestConfig() {
         this(false, null, null, false, false, 0, false, null, null,
-                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false);
+                DEFAULT_CONNECTION_REQUEST_TIMEOUT, null, null, DEFAULT_CONN_KEEP_ALIVE, false, false, false, null,
+                null);
     }
 
     RequestConfig(
@@ -88,7 +97,9 @@ public class RequestConfig implements Cloneable {
             final TimeValue connectionKeepAlive,
             final boolean contentCompressionEnabled,
             final boolean hardCancellationEnabled,
-            final boolean protocolUpgradeEnabled) {
+            final boolean protocolUpgradeEnabled,
+            final Path unixDomainSocket,
+            final PriorityValue h2Priority) {
         super();
         this.expectContinueEnabled = expectContinueEnabled;
         this.proxy = proxy;
@@ -106,6 +117,8 @@ public class RequestConfig implements Cloneable {
         this.contentCompressionEnabled = contentCompressionEnabled;
         this.hardCancellationEnabled = hardCancellationEnabled;
         this.protocolUpgradeEnabled = protocolUpgradeEnabled;
+        this.unixDomainSocket = unixDomainSocket;
+        this.h2Priority = h2Priority;
     }
 
     /**
@@ -117,11 +130,7 @@ public class RequestConfig implements Cloneable {
 
     /**
      * @see Builder#setProxy(HttpHost)
-     *
-     * @deprecated Use {@link org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner}
-     * or a custom {@link org.apache.hc.client5.http.routing.HttpRoutePlanner}.
      */
-    @Deprecated
     public HttpHost getProxy() {
         return proxy;
     }
@@ -227,6 +236,22 @@ public class RequestConfig implements Cloneable {
         return protocolUpgradeEnabled;
     }
 
+    /**
+     * @see Builder#setUnixDomainSocket(Path)
+     */
+    public Path getUnixDomainSocket() {
+        return unixDomainSocket;
+    }
+
+    /**
+     * Returns the HTTP/2+ priority preference for this request or {@code null} if unset.
+     * @since 5.6
+     */
+    @Experimental
+    public PriorityValue getH2Priority() {
+        return h2Priority;
+    }
+
     @Override
     protected RequestConfig clone() throws CloneNotSupportedException {
         return (RequestConfig) super.clone();
@@ -252,6 +277,8 @@ public class RequestConfig implements Cloneable {
         builder.append(", contentCompressionEnabled=").append(contentCompressionEnabled);
         builder.append(", hardCancellationEnabled=").append(hardCancellationEnabled);
         builder.append(", protocolUpgradeEnabled=").append(protocolUpgradeEnabled);
+        builder.append(", unixDomainSocket=").append(unixDomainSocket);
+        builder.append(", h2Priority=").append(h2Priority);
         builder.append("]");
         return builder.toString();
     }
@@ -277,7 +304,9 @@ public class RequestConfig implements Cloneable {
             .setConnectionKeepAlive(config.getConnectionKeepAlive())
             .setContentCompressionEnabled(config.isContentCompressionEnabled())
             .setHardCancellationEnabled(config.isHardCancellationEnabled())
-            .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled());
+            .setProtocolUpgradeEnabled(config.isProtocolUpgradeEnabled())
+            .setUnixDomainSocket(config.getUnixDomainSocket())
+            .setH2Priority(config.getH2Priority());
     }
 
     public static class Builder {
@@ -298,6 +327,8 @@ public class RequestConfig implements Cloneable {
         private boolean contentCompressionEnabled;
         private boolean hardCancellationEnabled;
         private boolean protocolUpgradeEnabled;
+        private Path unixDomainSocket;
+        private PriorityValue h2Priority;
 
         Builder() {
             super();
@@ -346,10 +377,7 @@ public class RequestConfig implements Cloneable {
          * </p>
          *
          * @return this instance.
-         * @deprecated Use {@link org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner}
-         * or a custom {@link org.apache.hc.client5.http.routing.HttpRoutePlanner}.
          */
-        @Deprecated
         public Builder setProxy(final HttpHost proxy) {
             this.proxy = proxy;
             return this;
@@ -517,6 +545,16 @@ public class RequestConfig implements Cloneable {
          * HTTP transports with message multiplexing.
          * </p>
          * <p>
+         * This parameter overrides the socket timeout setting applied at the connection
+         * management or I/O layers for the duration of a message exchange.
+         * </p>
+         * <p>
+         * Please note that response timeout is not a deadline. Its absolute value
+         * can be exceeded, for example, in case of automatic request re-execution.
+         * Please make sure the automatic request re-execution policy has been
+         * configured appropriately.
+         * </p>
+         * <p>
          * Default: {@code null}
          * </p>
          *
@@ -629,6 +667,35 @@ public class RequestConfig implements Cloneable {
             return this;
         }
 
+        /**
+         * Sets the Unix Domain Socket path to use for the connection.
+         * <p>
+         * When set, the connection will use the specified Unix Domain Socket
+         * instead of a TCP socket. This is useful for communicating with local
+         * services like Docker or systemd.
+         * </p>
+         * <p>
+         * Default: {@code null}
+         * </p>
+         *
+         * @return this instance.
+         * @since 5.6
+         */
+        public Builder setUnixDomainSocket(final Path unixDomainSocket) {
+            this.unixDomainSocket = unixDomainSocket;
+            return this;
+        }
+
+        /**
+         * Sets HTTP/2+ request priority. If {@code null}, the header is not emitted.
+         * @since 5.6
+         */
+        @Experimental
+        public Builder setH2Priority(final PriorityValue priority) {
+            this.h2Priority = priority;
+            return this;
+        }
+
         public RequestConfig build() {
             return new RequestConfig(
                     expectContinueEnabled,
@@ -646,7 +713,9 @@ public class RequestConfig implements Cloneable {
                     connectionKeepAlive != null ? connectionKeepAlive : DEFAULT_CONN_KEEP_ALIVE,
                     contentCompressionEnabled,
                     hardCancellationEnabled,
-                    protocolUpgradeEnabled);
+                    protocolUpgradeEnabled,
+                    unixDomainSocket,
+                    h2Priority);
         }
 
     }

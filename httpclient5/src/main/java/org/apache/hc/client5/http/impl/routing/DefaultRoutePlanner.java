@@ -28,6 +28,7 @@
 package org.apache.hc.client5.http.impl.routing;
 
 import java.net.InetAddress;
+import java.nio.file.Path;
 import java.util.Objects;
 
 import org.apache.hc.client5.http.HttpRoute;
@@ -94,8 +95,15 @@ public class DefaultRoutePlanner implements HttpRoutePlanner {
         } else {
             authority = null;
         }
-        final InetAddress inetAddress = determineLocalAddress(target, context);
 
+        final Path unixDomainSocket = config.getUnixDomainSocket();
+        if (unixDomainSocket != null) {
+            if (proxy != null) {
+                throw new UnsupportedOperationException("Proxies are not supported over Unix domain sockets");
+            }
+            return new HttpRoute(target, secure, unixDomainSocket);
+        }
+        final InetAddress inetAddress = determineLocalAddress(target, context);
         if (proxy == null) {
             return new HttpRoute(target, authority, inetAddress, secure);
         }

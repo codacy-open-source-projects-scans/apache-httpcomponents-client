@@ -29,7 +29,6 @@ package org.apache.hc.client5.http.psl;
 
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -40,17 +39,10 @@ import org.junit.jupiter.api.Test;
 class TestPublicSuffixMatcher {
 
     private static final String SOURCE_FILE = "suffixlistmatcher.txt";
-    private static final String PUBLIC_SUFFIX_LIST_FILE = "org/publicsuffix/list/effective_tld_names.dat";
 
     private PublicSuffixMatcher matcher;
     private PublicSuffixMatcher pslMatcher;
 
-    /**
-     * Create a matcher using the public suffix list file provided by publicsuffix.org (Mozilla).
-     *
-     * This test uses a copy of https://publicsuffix.org/list/effective_tld_names.dat in
-     * src/main/resources/org/publicsuffix/list/effective_tld_names.dat
-     */
     @BeforeEach
     void setUp() throws Exception {
         final ClassLoader classLoader = getClass().getClassLoader();
@@ -60,9 +52,8 @@ class TestPublicSuffixMatcher {
             final List<PublicSuffixList> lists = PublicSuffixListParser.INSTANCE.parseByType(new InputStreamReader(in, StandardCharsets.UTF_8));
             matcher = new PublicSuffixMatcher(lists);
         }
-        final URL publicSuffixListUrl = classLoader.getResource(PUBLIC_SUFFIX_LIST_FILE);
-        Assertions.assertNotNull(publicSuffixListUrl, PUBLIC_SUFFIX_LIST_FILE);
-        pslMatcher = PublicSuffixMatcherLoader.load(publicSuffixListUrl);
+        // Create a matcher using the public suffix list file provided by publicsuffix.org (Mozilla).
+        pslMatcher = PublicSuffixMatcherLoader.getDefault();
     }
 
     @Test
@@ -91,6 +82,8 @@ class TestPublicSuffixMatcher {
         Assertions.assertEquals("example.xx", matcher.getDomainRoot("www.blah.blah.example.XX"));
         Assertions.assertEquals(null, matcher.getDomainRoot("appspot.com"));
         Assertions.assertEquals("example.appspot.com", matcher.getDomainRoot("example.appspot.com"));
+        Assertions.assertEquals(null, matcher.getDomainRoot("s3.amazonaws.com"));
+        Assertions.assertEquals(null, matcher.getDomainRoot("blah.s3.amazonaws.com"));
         // Too short
         Assertions.assertNull(matcher.getDomainRoot("jp"));
         Assertions.assertNull(matcher.getDomainRoot("ac.jp"));
@@ -126,6 +119,8 @@ class TestPublicSuffixMatcher {
         Assertions.assertNull(matcher.getDomainRoot("garbage.garbage", DomainType.PRIVATE));
         Assertions.assertNull(matcher.getDomainRoot("*.garbage.garbage", DomainType.PRIVATE));
         Assertions.assertNull(matcher.getDomainRoot("*.garbage.garbage.garbage", DomainType.PRIVATE));
+        Assertions.assertNull(matcher.getDomainRoot("s3.amazonaws.com"));
+        Assertions.assertNull(matcher.getDomainRoot("blah.s3.amazonaws.com"));
     }
 
     @Test
@@ -148,6 +143,33 @@ class TestPublicSuffixMatcher {
         Assertions.assertNull(matcher.getDomainRoot("garbage.garbage", DomainType.ICANN));
         Assertions.assertNull(matcher.getDomainRoot("*.garbage.garbage", DomainType.ICANN));
         Assertions.assertNull(matcher.getDomainRoot("*.garbage.garbage.garbage", DomainType.ICANN));
+    }
+
+    @Test
+    void testMaySetCookies() {
+        Assertions.assertTrue(matcher.verify("foo.com"));
+
+        Assertions.assertFalse(matcher.verify("bar.foo.com"));
+        Assertions.assertTrue(matcher.verify("example.bar.foo.com"));
+
+        Assertions.assertTrue(matcher.verify("foo.bar.jp"));
+        Assertions.assertFalse(matcher.verify("bar.jp"));
+
+        Assertions.assertTrue(matcher.verify("foo.bar.hokkaido.jp"));
+        Assertions.assertFalse(matcher.verify("bar.hokkaido.jp"));
+
+        Assertions.assertTrue(matcher.verify("foo.bar.tokyo.jp"));
+        Assertions.assertFalse(matcher.verify("bar.tokyo.jp"));
+
+        Assertions.assertTrue(matcher.verify("pref.hokkaido.jp")); // exception from a wildcard rule
+        Assertions.assertTrue(matcher.verify("metro.tokyo.jp")); // exception from a wildcard rule
+    }
+
+    @Test
+    void testVerifyPrivate() {
+        Assertions.assertTrue(matcher.verify("s3.amazonaws.com"));
+        Assertions.assertTrue(matcher.verify("blah.s3.amazonaws.com"));
+        Assertions.assertTrue(matcher.verify("blah.xxx.uk"));
     }
 
     @Test

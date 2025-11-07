@@ -31,6 +31,8 @@ import java.net.InetSocketAddress;
 import java.net.Proxy;
 import java.net.Socket;
 import java.net.SocketAddress;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -41,11 +43,13 @@ import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.SchemePortResolver;
 import org.apache.hc.client5.http.SystemDefaultDnsResolver;
 import org.apache.hc.client5.http.UnsupportedSchemeException;
+import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.ConnPoolSupport;
 import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
 import org.apache.hc.client5.http.io.DetachedSocketFactory;
 import org.apache.hc.client5.http.io.HttpClientConnectionOperator;
 import org.apache.hc.client5.http.io.ManagedHttpClientConnection;
+import org.apache.hc.client5.http.socket.UnixDomainSocketFactory;
 import org.apache.hc.client5.http.ssl.TlsSocketStrategy;
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.Internal;
@@ -64,6 +68,8 @@ import org.apache.hc.core5.util.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import jdk.net.ExtendedSocketOptions;
+
 /**
  * Default implementation of {@link HttpClientConnectionOperator} used as default in Http client,
  * when no instance provided by user to {@link BasicHttpClientConnectionManager} or {@link
@@ -76,10 +82,15 @@ import org.slf4j.LoggerFactory;
 public class DefaultHttpClientConnectionOperator implements HttpClientConnectionOperator {
 
     private static final Logger LOG = LoggerFactory.getLogger(DefaultHttpClientConnectionOperator.class);
+    @SuppressWarnings({"Since15", "deprecation", "removal"})
+    private static final boolean SUPPORTS_KEEPALIVE_OPTIONS = jdk.net.Sockets.supportedOptions(Socket.class)
+            .containsAll(Arrays.asList(ExtendedSocketOptions.TCP_KEEPIDLE, ExtendedSocketOptions.TCP_KEEPINTERVAL,
+                    ExtendedSocketOptions.TCP_KEEPCOUNT));
 
     static final DetachedSocketFactory PLAIN_SOCKET_FACTORY = socksProxy -> socksProxy == null ? new Socket() : new Socket(socksProxy);
 
     private final DetachedSocketFactory detachedSocketFactory;
+    private final UnixDomainSocketFactory unixDomainSocketFactory = UnixDomainSocketFactory.getSocketFactory();
     private final Lookup<TlsSocketStrategy> tlsSocketStrategyLookup;
     private final SchemePortResolver schemePortResolver;
     private final DnsResolver dnsResolver;
@@ -153,15 +164,33 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
             final SocketConfig socketConfig,
             final Object attachment,
             final HttpContext context) throws IOException {
+        connect(conn, endpointHost, endpointName, null, localAddress, connectTimeout, socketConfig, attachment,
+            context);
+    }
+
+    @Override
+    public void connect(
+            final ManagedHttpClientConnection conn,
+            final HttpHost endpointHost,
+            final NamedEndpoint endpointName,
+            final Path unixDomainSocket,
+            final InetSocketAddress localAddress,
+            final Timeout connectTimeout,
+            final SocketConfig socketConfig,
+            final Object attachment,
+            final HttpContext context) throws IOException {
 
         Args.notNull(conn, "Connection");
         Args.notNull(endpointHost, "Host");
         Args.notNull(socketConfig, "Socket config");
         Args.notNull(context, "Context");
 
-        final Timeout soTimeout = socketConfig.getSoTimeout();
         final SocketAddress socksProxyAddress = socketConfig.getSocksProxyAddress();
         final Proxy socksProxy = socksProxyAddress != null ? new Proxy(Proxy.Type.SOCKS, socksProxyAddress) : null;
+        if (unixDomainSocket != null) {
+            connectToUnixDomainSocket(conn, endpointHost, endpointName, attachment, unixDomainSocket, connectTimeout, socketConfig, context);
+            return;
+        }
 
         final List<InetSocketAddress> remoteAddresses;
         if (endpointHost.getAddress() != null) {
@@ -178,50 +207,23 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
             if (LOG.isDebugEnabled()) {
                 LOG.debug("{} connecting {}->{} ({})", endpointHost, localAddress, remoteAddress, connectTimeout);
             }
-            final Socket socket = detachedSocketFactory.create(socksProxy);
+            final Socket socket = detachedSocketFactory.create(endpointHost.getSchemeName(), socksProxy);
             try {
                 // Always bind to the local address if it's provided.
                 if (localAddress != null) {
                     socket.bind(localAddress);
                 }
                 conn.bind(socket);
-                if (soTimeout != null) {
-                    socket.setSoTimeout(soTimeout.toMillisecondsIntBound());
-                }
-                socket.setReuseAddress(socketConfig.isSoReuseAddress());
-                socket.setTcpNoDelay(socketConfig.isTcpNoDelay());
-                socket.setKeepAlive(socketConfig.isSoKeepAlive());
-                if (socketConfig.getRcvBufSize() > 0) {
-                    socket.setReceiveBufferSize(socketConfig.getRcvBufSize());
-                }
-                if (socketConfig.getSndBufSize() > 0) {
-                    socket.setSendBufferSize(socketConfig.getSndBufSize());
-                }
-
-                final int linger = socketConfig.getSoLinger().toMillisecondsIntBound();
-                if (linger >= 0) {
-                    socket.setSoLinger(true, linger);
-                }
+                configureSocket(socket, socketConfig, true);
                 socket.connect(remoteAddress, TimeValue.isPositive(connectTimeout) ? connectTimeout.toMillisecondsIntBound() : 0);
                 conn.bind(socket);
                 onAfterSocketConnect(context, endpointHost);
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("{} {} connected {}->{}", ConnPoolSupport.getId(conn), endpointHost, conn.getLocalAddress(), conn.getRemoteAddress());
                 }
-                conn.setSocketTimeout(soTimeout);
                 final TlsSocketStrategy tlsSocketStrategy = tlsSocketStrategyLookup != null ? tlsSocketStrategyLookup.lookup(endpointHost.getSchemeName()) : null;
                 if (tlsSocketStrategy != null) {
-                    final NamedEndpoint tlsName = endpointName != null ? endpointName : endpointHost;
-                    onBeforeTlsHandshake(context, endpointHost);
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug("{} {} upgrading to TLS", ConnPoolSupport.getId(conn), tlsName);
-                    }
-                    final SSLSocket sslSocket = tlsSocketStrategy.upgrade(socket, tlsName.getHostName(), tlsName.getPort(), attachment, context);
-                    conn.bind(sslSocket, socket);
-                    onAfterTlsHandshake(context, endpointHost);
-                    if (LOG.isDebugEnabled()) {
-                        LOG.debug("{} {} upgraded to TLS", ConnPoolSupport.getId(conn), tlsName);
-                    }
+                    upgradeToTls(conn, endpointHost, endpointName, connectTimeout, attachment, context, tlsSocketStrategy, socket);
                 }
                 return;
             } catch (final RuntimeException ex) {
@@ -237,6 +239,114 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
                 }
                 if (LOG.isDebugEnabled()) {
                     LOG.debug("{} connection to {} failed ({}); retrying connection to the next address", endpointHost, remoteAddress, ex.getClass());
+                }
+            }
+        }
+    }
+
+    private void upgradeToTls(final ManagedHttpClientConnection conn, final HttpHost endpointHost,
+                              final NamedEndpoint endpointName, final Timeout connectTimeout, final Object attachment,
+                              final HttpContext context, final TlsSocketStrategy tlsSocketStrategy, final Socket socket)
+                              throws IOException {
+        final NamedEndpoint tlsName = endpointName != null ? endpointName : endpointHost;
+        onBeforeTlsHandshake(context, endpointHost);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("{} {} upgrading to TLS", ConnPoolSupport.getId(conn), tlsName);
+        }
+        final TlsConfig tlsConfig = attachment instanceof TlsConfig ? (TlsConfig) attachment : TlsConfig.DEFAULT;
+        final int soTimeout = socket.getSoTimeout();
+        final Timeout handshakeTimeout = tlsConfig.getHandshakeTimeout() != null ? tlsConfig.getHandshakeTimeout() : connectTimeout;
+        if (handshakeTimeout != null) {
+            socket.setSoTimeout(handshakeTimeout.toMillisecondsIntBound());
+        }
+        final SSLSocket sslSocket = tlsSocketStrategy.upgrade(socket, tlsName.getHostName(), tlsName.getPort(), attachment, context);
+        conn.bind(sslSocket, socket);
+        socket.setSoTimeout(soTimeout);
+        onAfterTlsHandshake(context, endpointHost);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("{} {} upgraded to TLS", ConnPoolSupport.getId(conn), tlsName);
+        }
+    }
+
+    private void connectToUnixDomainSocket(
+            final ManagedHttpClientConnection conn,
+            final HttpHost endpointHost,
+            final NamedEndpoint endpointName,
+            final Object attachment,
+            final Path unixDomainSocket,
+            final Timeout connectTimeout,
+            final SocketConfig socketConfig,
+            final HttpContext context) throws IOException {
+        onBeforeSocketConnect(context, endpointHost);
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("{} connecting to {} ({})", endpointHost, unixDomainSocket, connectTimeout);
+        }
+        final Socket newSocket = unixDomainSocketFactory.createSocket();
+        try {
+            conn.bind(newSocket);
+            final Socket socket = unixDomainSocketFactory.connectSocket(newSocket, unixDomainSocket,
+                connectTimeout);
+            conn.bind(socket);
+            configureSocket(socket, socketConfig, false);
+            onAfterSocketConnect(context, endpointHost);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{} {} connected to {}", ConnPoolSupport.getId(conn), endpointHost, unixDomainSocket);
+            }
+
+            final TlsSocketStrategy tlsSocketStrategy = tlsSocketStrategyLookup != null ? tlsSocketStrategyLookup.lookup(endpointHost.getSchemeName()) : null;
+            if (tlsSocketStrategy != null) {
+                upgradeToTls(conn, endpointHost, endpointName, connectTimeout, attachment, context, tlsSocketStrategy, socket);
+            }
+        } catch (final RuntimeException ex) {
+            Closer.closeQuietly(newSocket);
+            throw ex;
+        } catch (final IOException ex) {
+            Closer.closeQuietly(newSocket);
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{} connection to {} failed ({}); terminating operation", endpointHost, unixDomainSocket,
+                    ex.getClass());
+            }
+            throw ex;
+        }
+    }
+
+    @SuppressWarnings({"Since15", "deprecation"})
+    private static void configureSocket(
+        final Socket socket,
+        final SocketConfig socketConfig,
+        final boolean isTcp
+    ) throws IOException {
+        final Timeout socketTimeout = socketConfig.getSoTimeout();
+        if (socketTimeout != null) {
+            socket.setSoTimeout(socketTimeout.toMillisecondsIntBound());
+        }
+        if (socketConfig.getRcvBufSize() > 0) {
+            socket.setReceiveBufferSize(socketConfig.getRcvBufSize());
+        }
+        if (socketConfig.getSndBufSize() > 0) {
+            socket.setSendBufferSize(socketConfig.getSndBufSize());
+        }
+
+        final int linger = socketConfig.getSoLinger().toMillisecondsIntBound();
+        if (linger >= 0) {
+            socket.setSoLinger(true, linger);
+        }
+        if (isTcp) {
+            socket.setReuseAddress(socketConfig.isSoReuseAddress());
+            socket.setTcpNoDelay(socketConfig.isTcpNoDelay());
+            socket.setKeepAlive(socketConfig.isSoKeepAlive());
+            if (SUPPORTS_KEEPALIVE_OPTIONS) {
+                if (socketConfig.getTcpKeepIdle() > 0) {
+                    jdk.net.Sockets.setOption(socket, ExtendedSocketOptions.TCP_KEEPIDLE,
+                            socketConfig.getTcpKeepIdle());
+                }
+                if (socketConfig.getTcpKeepInterval() > 0) {
+                    jdk.net.Sockets.setOption(socket, ExtendedSocketOptions.TCP_KEEPINTERVAL,
+                            socketConfig.getTcpKeepInterval());
+                }
+                if (socketConfig.getTcpKeepCount() > 0) {
+                    jdk.net.Sockets.setOption(socket, ExtendedSocketOptions.TCP_KEEPCOUNT,
+                            socketConfig.getTcpKeepCount());
                 }
             }
         }
@@ -270,7 +380,7 @@ public class DefaultHttpClientConnectionOperator implements HttpClientConnection
                 LOG.debug("{} upgrading to TLS {}:{}", ConnPoolSupport.getId(conn), tlsName.getHostName(), tlsName.getPort());
             }
             final SSLSocket upgradedSocket = tlsSocketStrategy.upgrade(socket, tlsName.getHostName(), tlsName.getPort(), attachment, context);
-            conn.bind(upgradedSocket);
+            conn.bind(upgradedSocket, socket);
             onAfterTlsHandshake(context, endpointHost);
             if (LOG.isDebugEnabled()) {
                 LOG.debug("{} upgraded to TLS {}:{}", ConnPoolSupport.getId(conn), tlsName.getHostName(), tlsName.getPort());

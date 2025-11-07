@@ -35,11 +35,18 @@ import org.apache.hc.core5.annotation.ThreadingBehavior;
 
 /**
  * {@link InputStreamFactory} for handling Deflate Content Coded responses.
- *
+ * @deprecated Use {@link org.apache.hc.client5.http.entity.compress.ContentCodecRegistry#decoder(org.apache.hc.client5.http.entity.compress.ContentCoding)}
  * @since 5.0
  */
+@Deprecated
 @Contract(threading = ThreadingBehavior.STATELESS)
 public class DeflateInputStreamFactory implements InputStreamFactory {
+
+    /**
+     * Canonical token for the deflate content-coding.
+     * @since 5.6
+     */
+    public static final String ENCODING = "deflate";
 
     /**
      * Default instance of {@link DeflateInputStreamFactory}.

@@ -31,6 +31,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.ConnectException;
+import java.net.InetSocketAddress;
 import java.net.NoRouteToHostException;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -49,6 +50,7 @@ import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.cookie.BasicCookieStore;
 import org.apache.hc.client5.http.cookie.CookieStore;
 import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy;
+import org.apache.hc.client5.http.impl.LaxRedirectStrategy;
 import org.apache.hc.client5.http.impl.cookie.BasicClientCookie;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.protocol.RedirectLocations;
@@ -58,6 +60,8 @@ import org.apache.hc.client5.testing.classic.RandomHandler;
 import org.apache.hc.client5.testing.classic.RedirectingDecorator;
 import org.apache.hc.client5.testing.extension.sync.ClientProtocolLevel;
 import org.apache.hc.client5.testing.extension.sync.TestClient;
+import org.apache.hc.client5.testing.extension.sync.TestServer;
+import org.apache.hc.client5.testing.extension.sync.TestServerBootstrap;
 import org.apache.hc.client5.testing.redirect.Redirect;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
@@ -73,13 +77,17 @@ import org.apache.hc.core5.http.URIScheme;
 import org.apache.hc.core5.http.io.HttpRequestHandler;
 import org.apache.hc.core5.http.io.entity.EntityUtils;
 import org.apache.hc.core5.http.io.entity.StringEntity;
+import org.apache.hc.core5.http.io.support.ClassicRequestBuilder;
 import org.apache.hc.core5.http.message.BasicHeader;
 import org.apache.hc.core5.http.protocol.HttpContext;
+import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.net.URIBuilder;
 import org.apache.hc.core5.util.TimeValue;
 import org.hamcrest.CoreMatchers;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Redirection test cases.
@@ -639,8 +647,8 @@ abstract class TestRedirects extends AbstractIntegrationTestBase {
         Assertions.assertEquals(new URIBuilder().setHttpHost(target).setPath("/random/100").build(),
                 reqWrapper.getUri());
 
-        assertThat(values.poll(), CoreMatchers.equalTo("gzip, x-gzip, deflate"));
-        assertThat(values.poll(), CoreMatchers.equalTo("gzip, x-gzip, deflate"));
+        assertThat(values.poll(), CoreMatchers.equalTo("gzip, deflate, lz4-framed, lz4-block, bzip2, pack200, deflate64, x-gzip"));
+        assertThat(values.poll(), CoreMatchers.equalTo("gzip, deflate, lz4-framed, lz4-block, bzip2, pack200, deflate64, x-gzip"));
         assertThat(values.poll(), CoreMatchers.nullValue());
     }
 
@@ -702,6 +710,109 @@ abstract class TestRedirects extends AbstractIntegrationTestBase {
                         .setPath("/random/50")
                         .build(),
                 reqWrapper.getUri());
+    }
+
+    @ParameterizedTest(name = "{displayName}; manually added header: {0}")
+    @ValueSource(strings = {HttpHeaders.AUTHORIZATION, HttpHeaders.COOKIE})
+    void testCrossSiteRedirectWithSensitiveHeaders(final String headerName) throws Exception {
+        final URIScheme scheme = scheme();
+        final TestServer secondServer = new TestServerBootstrap(scheme())
+                .register("/random/*", new RandomHandler())
+                .build();
+        try {
+            final InetSocketAddress address2 = secondServer.start();
+
+            final HttpHost redirectTarget = new HttpHost(scheme.name(), "localhost", address2.getPort());
+
+            configureServer(bootstrap -> bootstrap
+                    .setExchangeHandlerDecorator(requestHandler -> new RedirectingDecorator(
+                            requestHandler,
+                            requestUri -> {
+                                final URI location = new URIBuilder(requestUri)
+                                        .setHttpHost(redirectTarget)
+                                        .setPath("/random/100")
+                                        .build();
+                                return new Redirect(HttpStatus.SC_MOVED_TEMPORARILY, location.toString());
+                            }))
+                    .register("/random/*", new RandomHandler())
+            );
+
+            final HttpHost target = startServer();
+
+            final TestClient client = client();
+            final HttpClientContext context = HttpClientContext.create();
+
+            client.execute(target,
+                    ClassicRequestBuilder.get()
+                            .setHttpHost(target)
+                            .setPath("/oldlocation")
+                            .setHeader(headerName, "custom header")
+                            .build(),
+                    context,
+                    response -> {
+                        Assertions.assertEquals(HttpStatus.SC_MOVED_TEMPORARILY, response.getCode());
+                        EntityUtils.consume(response.getEntity());
+                        return null;
+                    });
+            final RedirectLocations redirects = context.getRedirectLocations();
+            Assertions.assertNotNull(redirects);
+            Assertions.assertEquals(0, redirects.size());
+        } finally {
+            secondServer.shutdown(CloseMode.GRACEFUL);
+        }
+    }
+
+    @ParameterizedTest(name = "{displayName}; manually added header: {0}")
+    @ValueSource(strings = {HttpHeaders.AUTHORIZATION, HttpHeaders.COOKIE})
+    void testCrossSiteRedirectWithSensitiveHeadersAndLaxRedirectStrategy(final String headerName) throws Exception {
+        configureClient(builder -> builder
+                .setRedirectStrategy(new LaxRedirectStrategy())
+        );
+        final URIScheme scheme = scheme();
+        final TestServer secondServer = new TestServerBootstrap(scheme())
+                .register("/random/*", new RandomHandler())
+                .build();
+        try {
+            final InetSocketAddress address2 = secondServer.start();
+
+            final HttpHost redirectTarget = new HttpHost(scheme.name(), "localhost", address2.getPort());
+
+            configureServer(bootstrap -> bootstrap
+                    .setExchangeHandlerDecorator(requestHandler -> new RedirectingDecorator(
+                            requestHandler,
+                            requestUri -> {
+                                final URI location = new URIBuilder(requestUri)
+                                        .setHttpHost(redirectTarget)
+                                        .setPath("/random/100")
+                                        .build();
+                                return new Redirect(HttpStatus.SC_MOVED_TEMPORARILY, location.toString());
+                            }))
+                    .register("/random/*", new RandomHandler())
+            );
+
+            final HttpHost target = startServer();
+
+            final TestClient client = client();
+            final HttpClientContext context = HttpClientContext.create();
+
+            client.execute(target,
+                    ClassicRequestBuilder.get()
+                            .setHttpHost(target)
+                            .setPath("/oldlocation")
+                            .setHeader(headerName, "custom header")
+                            .build(),
+                    context,
+                    response -> {
+                        Assertions.assertEquals(HttpStatus.SC_OK, response.getCode());
+                        EntityUtils.consume(response.getEntity());
+                        return null;
+                    });
+            final RedirectLocations redirects = context.getRedirectLocations();
+            Assertions.assertNotNull(redirects);
+            Assertions.assertEquals(1, redirects.size());
+        } finally {
+            secondServer.shutdown(CloseMode.GRACEFUL);
+        }
     }
 
 }

@@ -27,9 +27,11 @@
 
 package org.apache.hc.client5.http.impl.nio;
 
+import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.nio.file.Path;
 import java.util.concurrent.Future;
 
 import org.apache.hc.client5.http.DnsResolver;
@@ -69,7 +71,15 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
     private final MultihomeIOSessionRequester sessionRequester;
     private final Lookup<TlsStrategy> tlsStrategyLookup;
 
-    DefaultAsyncClientConnectionOperator(
+    /**
+     * Constructs a new {@code DefaultAsyncClientConnectionOperator}.
+     *
+     * <p><strong>Note:</strong> this class is marked {@code @Internal}; rely on it
+     * only if you are prepared for incompatible changes in a future major
+     * release.  Typical client code should use the high-level builders in
+     * {@code HttpAsyncClients} instead.</p>
+     */
+    protected DefaultAsyncClientConnectionOperator(
             final Lookup<TlsStrategy> tlsStrategyLookup,
             final SchemePortResolver schemePortResolver,
             final DnsResolver dnsResolver) {
@@ -92,8 +102,23 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
 
     @Override
     public Future<ManagedAsyncClientConnection> connect(
+        final ConnectionInitiator connectionInitiator,
+        final HttpHost endpointHost,
+        final NamedEndpoint endpointName,
+        final SocketAddress localAddress,
+        final Timeout connectTimeout,
+        final Object attachment,
+        final HttpContext context,
+        final FutureCallback<ManagedAsyncClientConnection> callback) {
+        return connect(connectionInitiator, endpointHost, null, endpointName, localAddress, connectTimeout, attachment,
+            context, callback);
+    }
+
+    @Override
+    public Future<ManagedAsyncClientConnection> connect(
             final ConnectionInitiator connectionInitiator,
             final HttpHost endpointHost,
+            final Path unixDomainSocket,
             final NamedEndpoint endpointName,
             final SocketAddress localAddress,
             final Timeout connectTimeout,
@@ -104,7 +129,14 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
         Args.notNull(endpointHost, "Host");
         final ComplexFuture<ManagedAsyncClientConnection> future = new ComplexFuture<>(callback);
         final HttpHost remoteEndpoint = RoutingSupport.normalize(endpointHost, schemePortResolver);
-        final InetAddress remoteAddress = endpointHost.getAddress();
+        final SocketAddress remoteAddress;
+        if (unixDomainSocket == null) {
+            final InetAddress remoteInetAddress = endpointHost.getAddress();
+            remoteAddress = remoteInetAddress != null ?
+                new InetSocketAddress(remoteInetAddress, remoteEndpoint.getPort()) : null;
+        } else {
+            remoteAddress = createUnixSocketAddress(unixDomainSocket);
+        }
         final TlsConfig tlsConfig = attachment instanceof TlsConfig ? (TlsConfig) attachment : TlsConfig.DEFAULT;
 
         onBeforeSocketConnect(context, endpointHost);
@@ -115,7 +147,7 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
         final Future<IOSession> sessionFuture = sessionRequester.connect(
                 connectionInitiator,
                 remoteEndpoint,
-                remoteAddress != null ? new InetSocketAddress(remoteAddress, remoteEndpoint.getPort()) : null,
+                remoteAddress,
                 localAddress,
                 connectTimeout,
                 tlsConfig.getHttpVersionPolicy(),
@@ -133,7 +165,7 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
                         if (tlsStrategy != null) {
                             try {
                                 final Timeout socketTimeout = connection.getSocketTimeout();
-                                final Timeout handshakeTimeout = tlsConfig.getHandshakeTimeout();
+                                final Timeout handshakeTimeout = tlsConfig.getHandshakeTimeout() != null ? tlsConfig.getHandshakeTimeout() : connectTimeout;
                                 final NamedEndpoint tlsName = endpointName != null ? endpointName : endpointHost;
                                 onBeforeTlsHandshake(context, endpointHost);
                                 if (LOG.isDebugEnabled()) {
@@ -143,7 +175,7 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
                                         connection,
                                         tlsName,
                                         attachment,
-                                        handshakeTimeout != null ? handshakeTimeout : connectTimeout,
+                                        handshakeTimeout,
                                         new FutureContribution<TransportSecurityLayer>(future) {
 
                                             @Override
@@ -178,6 +210,18 @@ public class DefaultAsyncClientConnectionOperator implements AsyncClientConnecti
                 });
         future.setDependency(sessionFuture);
         return future;
+    }
+
+    // The IOReactor does not support AFUNIXSocketChannel from JUnixSocket, so if a Unix domain socket was configured,
+    // we must use JEP 380 sockets and addresses.
+    private static SocketAddress createUnixSocketAddress(final Path socketPath) {
+        try {
+            final Class<?> addressClass = Class.forName("java.net.UnixDomainSocketAddress");
+            final Method ofMethod = addressClass.getMethod("of", Path.class);
+            return (SocketAddress) ofMethod.invoke(null, socketPath);
+        } catch (final ReflectiveOperationException ex) {
+            throw new UnsupportedOperationException("Async Unix domain socket support requires Java 16 or later", ex);
+        }
     }
 
     @Override

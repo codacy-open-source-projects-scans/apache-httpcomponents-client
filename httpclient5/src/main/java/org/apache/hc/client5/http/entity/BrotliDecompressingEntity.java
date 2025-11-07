@@ -31,10 +31,12 @@ import org.apache.hc.core5.http.HttpEntity;
 /**
  * {@link org.apache.hc.core5.http.io.entity.HttpEntityWrapper} responsible for
  * handling br Content Coded responses.
+ * @deprecated See {@link org.apache.hc.client5.http.entity.compress.ContentCodecRegistry#decoder(org.apache.hc.client5.http.entity.compress.ContentCoding)}
  *
  * @see GzipDecompressingEntity
  * @since 5.2
  */
+@Deprecated
 public class BrotliDecompressingEntity extends DecompressingEntity {
     /**
      * Creates a new {@link DecompressingEntity}.

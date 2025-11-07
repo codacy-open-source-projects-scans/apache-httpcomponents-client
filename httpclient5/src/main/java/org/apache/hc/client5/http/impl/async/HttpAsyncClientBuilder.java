@@ -29,17 +29,19 @@ package org.apache.hc.client5.http.impl.async;
 
 import java.io.Closeable;
 import java.net.ProxySelector;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
 import org.apache.hc.client5.http.ConnectionKeepAliveStrategy;
+import org.apache.hc.client5.http.EarlyHintsListener;
 import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.SchemePortResolver;
 import org.apache.hc.client5.http.UserTokenHandler;
@@ -67,12 +69,14 @@ import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.auth.BasicSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.BearerSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.DigestSchemeFactory;
+import org.apache.hc.client5.http.impl.auth.ScramSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.SystemDefaultCredentialsProvider;
 import org.apache.hc.client5.http.impl.nio.PoolingAsyncClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner;
 import org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner;
 import org.apache.hc.client5.http.impl.routing.SystemDefaultRoutePlanner;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
+import org.apache.hc.client5.http.protocol.H2RequestPriority;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.protocol.RedirectStrategy;
 import org.apache.hc.client5.http.protocol.RequestAddCookies;
@@ -82,6 +86,7 @@ import org.apache.hc.client5.http.protocol.RequestUpgrade;
 import org.apache.hc.client5.http.protocol.RequestValidateTrace;
 import org.apache.hc.client5.http.protocol.ResponseProcessCookies;
 import org.apache.hc.client5.http.routing.HttpRoutePlanner;
+import org.apache.hc.core5.annotation.Experimental;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.DefaultThreadFactory;
 import org.apache.hc.core5.function.Callback;
@@ -96,6 +101,7 @@ import org.apache.hc.core5.http.config.Http1Config;
 import org.apache.hc.core5.http.config.Lookup;
 import org.apache.hc.core5.http.config.NamedElementChain;
 import org.apache.hc.core5.http.config.RegistryBuilder;
+import org.apache.hc.core5.http.nio.AsyncDataConsumer;
 import org.apache.hc.core5.http.nio.command.ShutdownCommand;
 import org.apache.hc.core5.http.protocol.DefaultHttpProcessor;
 import org.apache.hc.core5.http.protocol.HttpContext;
@@ -154,6 +160,8 @@ import org.apache.hc.core5.util.VersionInfo;
  * @since 5.0
  */
 public class HttpAsyncClientBuilder {
+
+    private static final TimeValue ONE_SECOND = TimeValue.ofSeconds(1L);
 
     private static class RequestInterceptorEntry {
 
@@ -258,6 +266,21 @@ public class HttpAsyncClientBuilder {
     private List<Closeable> closeables;
 
     private ProxySelector proxySelector;
+
+    private EarlyHintsListener earlyHintsListener;
+
+    private boolean priorityHeaderDisabled;
+
+
+    /**
+     * Maps {@code Content-Encoding} tokens to decoder factories in insertion order.
+     */
+    private LinkedHashMap<String, UnaryOperator<AsyncDataConsumer>> contentDecoderMap;
+
+    /**
+     * When {@code true} the client skips <i>all</i> transparent response decompression.
+     */
+    private boolean contentCompressionDisabled;
 
     public static HttpAsyncClientBuilder create() {
         return new HttpAsyncClientBuilder();
@@ -845,6 +868,63 @@ public class HttpAsyncClientBuilder {
         return this;
     }
 
+
+    /**
+     * Replaces the current decoder registry with {@code contentDecoderMap}.
+     *
+     * <p>The map’s insertion order defines the {@code Accept-Encoding}
+     * preference list sent on every request.</p>
+     *
+     * @param contentDecoderMap a non-empty {@link LinkedHashMap} whose keys are
+     *                          lower-case coding tokens and whose values create
+     *                          a fresh wrapper consumer for each response
+     * @return {@code this} builder instance
+     * @since 5.6
+     */
+    public HttpAsyncClientBuilder setContentDecoderMap(
+            final LinkedHashMap<String, UnaryOperator<AsyncDataConsumer>> contentDecoderMap) {
+        this.contentDecoderMap = contentDecoderMap;
+        return this;
+    }
+
+    /**
+     * Disables transparent response decompression for the client produced by
+     * this builder.
+     *
+     * @return {@code this} builder instance
+     * @since 5.6
+     */
+    public HttpAsyncClientBuilder disableContentCompression() {
+        this.contentCompressionDisabled = true;
+        return this;
+    }
+
+    /**
+     * Disable installing the HTTP/2 Priority header interceptor by default.
+     * @since 5.6
+     */
+    @Experimental
+    public final HttpAsyncClientBuilder disableRequestPriority() {
+        this.priorityHeaderDisabled = true;
+        return this;
+    }
+
+    /**
+     * Registers a global {@link org.apache.hc.client5.http.EarlyHintsListener}
+     * that will be notified when the client receives {@code 103 Early Hints}
+     * informational responses for any request executed by the built client.
+     *
+     * @param listener the listener to receive {@code 103 Early Hints} events,
+     *                 or {@code null} to remove the listener
+     * @return this builder
+     * @since 5.6
+     */
+    public final HttpAsyncClientBuilder setEarlyHintsListener(final EarlyHintsListener listener) {
+        this.earlyHintsListener = listener;
+        return this;
+    }
+
+
     /**
      * Request exec chain customization and extension.
      * <p>
@@ -875,6 +955,11 @@ public class HttpAsyncClientBuilder {
     @Internal
     protected Function<HttpContext, HttpClientContext> contextAdaptor() {
         return HttpClientContext::castOrCreate;
+    }
+
+    @Internal
+    public AsyncClientConnectionManager getConnManager() {
+        return connManager;
     }
 
     @SuppressWarnings("deprecated")
@@ -914,7 +999,7 @@ public class HttpAsyncClientBuilder {
         String userAgentCopy = this.userAgent;
         if (userAgentCopy == null) {
             if (systemProperties) {
-                userAgentCopy = getProperty("http.agent", null);
+                userAgentCopy = System.getProperty("http.agent", null);
             }
             if (userAgentCopy == null) {
                 userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
@@ -967,6 +1052,10 @@ public class HttpAsyncClientBuilder {
             }
         }
 
+        if (!priorityHeaderDisabled) {
+            b.addLast(H2RequestPriority.INSTANCE);
+        }
+
         final HttpProcessor httpProcessor = b.build();
 
         final NamedElementChain<AsyncExecChainHandler> execChainDefinition = new NamedElementChain<>();
@@ -981,6 +1070,11 @@ public class HttpAsyncClientBuilder {
                         schemePortResolver != null ? schemePortResolver : DefaultSchemePortResolver.INSTANCE,
                         authCachingDisabled),
                 ChainElement.CONNECT.name());
+
+        if (earlyHintsListener != null) {
+            addExecInterceptorBefore(ChainElement.PROTOCOL.name(), "early-hints",
+                    new EarlyHintsAsyncExec(earlyHintsListener));
+        }
 
         execChainDefinition.addFirst(
                 new AsyncProtocolExec(
@@ -1001,6 +1095,19 @@ public class HttpAsyncClientBuilder {
                     ChainElement.RETRY.name());
         }
 
+        if (!contentCompressionDisabled) {
+            if (contentDecoderMap != null && !contentDecoderMap.isEmpty()) {
+                execChainDefinition.addFirst(
+                        new ContentCompressionAsyncExec(contentDecoderMap, true),
+                        ChainElement.COMPRESS.name());
+            } else {
+                execChainDefinition.addFirst(
+                        new ContentCompressionAsyncExec(),
+                        ChainElement.COMPRESS.name());
+            }
+        }
+
+
         HttpRoutePlanner routePlannerCopy = this.routePlanner;
         if (routePlannerCopy == null) {
             SchemePortResolver schemePortResolverCopy = this.schemePortResolver;
@@ -1012,7 +1119,7 @@ public class HttpAsyncClientBuilder {
             } else if (this.proxySelector != null) {
                 routePlannerCopy = new SystemDefaultRoutePlanner(schemePortResolverCopy, this.proxySelector);
             } else if (systemProperties) {
-                final ProxySelector defaultProxySelector = AccessController.doPrivileged((PrivilegedAction<ProxySelector>) ProxySelector::getDefault);
+                final ProxySelector defaultProxySelector = ProxySelector.getDefault();
                 routePlannerCopy = new SystemDefaultRoutePlanner(schemePortResolverCopy, defaultProxySelector);
             } else {
                 routePlannerCopy = new DefaultRoutePlanner(schemePortResolverCopy);
@@ -1023,7 +1130,7 @@ public class HttpAsyncClientBuilder {
         if (!redirectHandlingDisabled) {
             RedirectStrategy redirectStrategyCopy = this.redirectStrategy;
             if (redirectStrategyCopy == null) {
-                redirectStrategyCopy = DefaultRedirectStrategy.INSTANCE;
+                redirectStrategyCopy = schemePortResolver != null ? new DefaultRedirectStrategy(schemePortResolver) : DefaultRedirectStrategy.INSTANCE;
             }
             execChainDefinition.addFirst(
                     new AsyncRedirectExec(routePlannerCopy, redirectStrategyCopy),
@@ -1037,8 +1144,10 @@ public class HttpAsyncClientBuilder {
             }
             if (evictExpiredConnections || evictIdleConnections) {
                 if (connManagerCopy instanceof ConnPoolControl) {
+                    TimeValue sleepTime = maxIdleTime.divide(10, TimeUnit.NANOSECONDS);
+                    sleepTime = sleepTime.compareTo(ONE_SECOND) < 0 ? ONE_SECOND : sleepTime;
                     final IdleConnectionEvictor connectionEvictor = new IdleConnectionEvictor((ConnPoolControl<?>) connManagerCopy,
-                            maxIdleTime, maxIdleTime);
+                            sleepTime, maxIdleTime);
                     closeablesCopy.add(connectionEvictor::shutdown);
                     connectionEvictor.start();
                 }
@@ -1048,7 +1157,7 @@ public class HttpAsyncClientBuilder {
         ConnectionReuseStrategy reuseStrategyCopy = this.reuseStrategy;
         if (reuseStrategyCopy == null) {
             if (systemProperties) {
-                final String s = getProperty("http.keepAlive", "true");
+                final String s = System.getProperty("http.keepAlive", "true");
                 if ("true".equalsIgnoreCase(s)) {
                     reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
                 } else {
@@ -1065,7 +1174,8 @@ public class HttpAsyncClientBuilder {
                 h2Config != null ? h2Config : H2Config.DEFAULT,
                 h1Config != null ? h1Config : Http1Config.DEFAULT,
                 charCodingConfig != null ? charCodingConfig : CharCodingConfig.DEFAULT,
-                reuseStrategyCopy);
+                reuseStrategyCopy,
+                ioReactorExceptionCallback != null ? ioReactorExceptionCallback : LoggingExceptionCallback.INSTANCE);
         final DefaultConnectingIOReactor ioReactor = new DefaultConnectingIOReactor(
                 ioEventHandlerFactory,
                 ioReactorConfig != null ? ioReactorConfig : IOReactorConfig.DEFAULT,
@@ -1114,10 +1224,11 @@ public class HttpAsyncClientBuilder {
                     .register(StandardAuthScheme.BASIC, BasicSchemeFactory.INSTANCE)
                     .register(StandardAuthScheme.DIGEST, DigestSchemeFactory.INSTANCE)
                     .register(StandardAuthScheme.BEARER, BearerSchemeFactory.INSTANCE)
+                    .register(StandardAuthScheme.SCRAM_SHA_256, ScramSchemeFactory.INSTANCE)
                     .build();
         }
         Lookup<CookieSpecFactory> cookieSpecRegistryCopy = this.cookieSpecRegistry;
-        if (cookieSpecRegistryCopy == null) {
+        if (cookieSpecRegistryCopy == null && !cookieManagementDisabled) {
             cookieSpecRegistryCopy = CookieSpecSupport.createDefault();
         }
 
@@ -1150,10 +1261,6 @@ public class HttpAsyncClientBuilder {
                 contextAdaptor(),
                 defaultRequestConfig,
                 closeablesCopy);
-    }
-
-    private String getProperty(final String key, final String defaultValue) {
-        return AccessController.doPrivileged((PrivilegedAction<String>) () -> System.getProperty(key, defaultValue));
     }
 
 }

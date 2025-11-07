@@ -27,18 +27,22 @@
 
 package org.apache.hc.client5.testing.extension.sync;
 
+import java.nio.file.Path;
 import java.util.Collection;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
 import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.UserTokenHandler;
 import org.apache.hc.client5.http.auth.AuthSchemeFactory;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.io.HttpClientConnectionManager;
+import org.apache.hc.client5.http.protocol.RedirectStrategy;
 import org.apache.hc.client5.http.ssl.DefaultClientTlsStrategy;
 import org.apache.hc.client5.testing.SSLTestContexts;
 import org.apache.hc.core5.http.Header;
@@ -147,6 +151,26 @@ final class StandardTestClientBuilder implements TestClientBuilder {
     @Override
     public TestClientBuilder addExecInterceptorLast(final String name, final ExecChainHandler interceptor) {
         this.clientBuilder.addExecInterceptorLast(name, interceptor);
+        return this;
+    }
+
+    @Override
+    public TestClientBuilder setDefaultCredentialsProvider(final CredentialsProvider credentialsProvider) {
+        this.clientBuilder.setDefaultCredentialsProvider(credentialsProvider);
+        return this;
+    }
+
+    @Override
+    public TestClientBuilder setUnixDomainSocket(final Path unixDomainSocket) {
+        this.clientBuilder.setDefaultRequestConfig(RequestConfig.custom()
+                .setUnixDomainSocket(unixDomainSocket)
+                .build());
+        return this;
+    }
+
+    @Override
+    public TestClientBuilder setRedirectStrategy(final RedirectStrategy redirectStrategy) {
+        this.clientBuilder.setRedirectStrategy(redirectStrategy);
         return this;
     }
 

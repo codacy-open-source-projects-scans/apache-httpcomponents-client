@@ -43,7 +43,6 @@ import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSession;
 import javax.security.auth.x500.X500Principal;
 
-import org.apache.hc.client5.http.psl.DomainType;
 import org.apache.hc.client5.http.psl.PublicSuffixMatcher;
 import org.apache.hc.client5.http.utils.DnsUtils;
 import org.apache.hc.core5.annotation.Contract;
@@ -159,11 +158,11 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
 
     static void matchDNSName(final String host, final List<SubjectName> subjectAlts,
                              final PublicSuffixMatcher publicSuffixMatcher) throws SSLPeerUnverifiedException {
-        final String normalizedHost = DnsUtils.normalize(host);
+        final String normalizedHost = DnsUtils.normalizeUnicode(host);
         for (final SubjectName subjectAlt : subjectAlts) {
             if (subjectAlt.getType() == SubjectName.DNS) {
-                final String normalizedSubjectAlt = DnsUtils.normalize(subjectAlt.getValue());
-                if (matchIdentityStrict(normalizedHost, normalizedSubjectAlt, publicSuffixMatcher)) {
+                final String normalizedSubjectAlt = DnsUtils.normalizeUnicode(subjectAlt.getValue());
+                if (matchIdentity(normalizedHost, normalizedSubjectAlt, publicSuffixMatcher, true)) {
                     return;
                 }
             }
@@ -180,9 +179,9 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
             throw new SSLPeerUnverifiedException("Certificate subject for <" + host + "> doesn't contain " +
                     "a common name and does not have alternative names");
         }
-        final String normalizedHost = DnsUtils.normalize(host);
-        final String normalizedCn = DnsUtils.normalize(cn);
-        if (!matchIdentityStrict(normalizedHost, normalizedCn, publicSuffixMatcher)) {
+        final String normalizedHost = DnsUtils.normalizeUnicode(host);
+        final String normalizedCn = DnsUtils.normalizeUnicode(cn);
+        if (!matchIdentity(normalizedHost, normalizedCn, publicSuffixMatcher, true)) {
             throw new SSLPeerUnverifiedException("Certificate for <" + host + "> doesn't match " +
                     "common name of the certificate subject: " + cn);
         }
@@ -224,12 +223,14 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
         return false;
     }
 
-    private static boolean matchIdentity(final String host, final String identity,
+    static boolean matchIdentity(final String host, final String identity,
                                          final PublicSuffixMatcher publicSuffixMatcher,
-                                         final DomainType domainType,
                                          final boolean strict) {
         if (publicSuffixMatcher != null && host.contains(".")) {
-            if (publicSuffixMatcher.getDomainRoot(identity, domainType) == null) {
+            if (!publicSuffixMatcher.verifyInternal(identity)) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Public Suffix List verification failed for identity '{}'", identity);
+                }
                 return false;
             }
         }
@@ -243,6 +244,7 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
         if (asteriskIdx != -1) {
             final String prefix = identity.substring(0, asteriskIdx);
             final String suffix = identity.substring(asteriskIdx + 1);
+
             if (!prefix.isEmpty() && !host.startsWith(prefix)) {
                 return false;
             }
@@ -252,42 +254,16 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
             // Additional sanity checks on content selected by wildcard can be done here
             if (strict) {
                 final String remainder = host.substring(
-                        prefix.length(), host.length() - suffix.length());
+                        prefix.length(),
+                        host.length() - suffix.length()
+                );
                 return !remainder.contains(".");
             }
             return true;
         }
+
+        // Direct Unicode comparison
         return host.equalsIgnoreCase(identity);
-    }
-
-    static boolean matchIdentity(final String host, final String identity,
-                                 final PublicSuffixMatcher publicSuffixMatcher) {
-        return matchIdentity(host, identity, publicSuffixMatcher, null, false);
-    }
-
-    static boolean matchIdentity(final String host, final String identity) {
-        return matchIdentity(host, identity, null, null, false);
-    }
-
-    static boolean matchIdentityStrict(final String host, final String identity,
-                                       final PublicSuffixMatcher publicSuffixMatcher) {
-        return matchIdentity(host, identity, publicSuffixMatcher, null, true);
-    }
-
-    static boolean matchIdentityStrict(final String host, final String identity) {
-        return matchIdentity(host, identity, null, null, true);
-    }
-
-    static boolean matchIdentity(final String host, final String identity,
-                                 final PublicSuffixMatcher publicSuffixMatcher,
-                                 final DomainType domainType) {
-        return matchIdentity(host, identity, publicSuffixMatcher, domainType, false);
-    }
-
-    static boolean matchIdentityStrict(final String host, final String identity,
-                                       final PublicSuffixMatcher publicSuffixMatcher,
-                                       final DomainType domainType) {
-        return matchIdentity(host, identity, publicSuffixMatcher, domainType, true);
     }
 
     static String extractCN(final String subjectPrincipal) throws SSLException {
@@ -339,7 +315,14 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
                         if (o instanceof String) {
                             result.add(new SubjectName((String) o, type));
                         } else if (o instanceof byte[]) {
-                            // TODO ASN.1 DER encoded form
+                            final byte[] bytes = (byte[]) o;
+                            if (type == SubjectName.IP) {
+                                if (bytes.length == 4) {
+                                    result.add(new SubjectName(byteArrayToIp(bytes), type)); // IPv4
+                                } else if (bytes.length == 16) {
+                                    result.add(new SubjectName(byteArrayToIPv6(bytes), type)); // IPv6
+                                }
+                            }
                         }
                     }
                 }
@@ -364,4 +347,29 @@ public final class DefaultHostnameVerifier implements HttpClientHostnameVerifier
             return hostname;
         }
     }
+
+    private static String byteArrayToIp(final byte[] bytes) {
+        if (bytes.length != 4) {
+            throw new IllegalArgumentException("Invalid byte array length for IPv4 address");
+        }
+        return (bytes[0] & 0xFF) + "." +
+                (bytes[1] & 0xFF) + "." +
+                (bytes[2] & 0xFF) + "." +
+                (bytes[3] & 0xFF);
+    }
+
+    private static String byteArrayToIPv6(final byte[] bytes) {
+        if (bytes.length != 16) {
+            throw new IllegalArgumentException("Invalid byte array length for IPv6 address");
+        }
+        final StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < bytes.length; i += 2) {
+            sb.append(String.format("%02x%02x", bytes[i], bytes[i + 1]));
+            if (i < bytes.length - 2) {
+                sb.append(":");
+            }
+        }
+        return sb.toString();
+    }
+
 }

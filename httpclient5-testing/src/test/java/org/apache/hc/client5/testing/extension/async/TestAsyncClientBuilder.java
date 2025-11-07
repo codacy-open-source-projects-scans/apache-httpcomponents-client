@@ -27,13 +27,16 @@
 
 package org.apache.hc.client5.testing.extension.async;
 
+import java.nio.file.Path;
 import java.util.Collection;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
 import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.UserTokenHandler;
 import org.apache.hc.client5.http.auth.AuthSchemeFactory;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.config.TlsConfig;
+import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpRequestInterceptor;
 import org.apache.hc.core5.http.HttpResponseInterceptor;
@@ -49,8 +52,12 @@ public interface TestAsyncClientBuilder {
 
     TestAsyncClientBuilder setTimeout(Timeout soTimeout);
 
-    default TestAsyncClientBuilder addResponseInterceptorFirst(final HttpResponseInterceptor interceptor) {
-        return this;
+    default TestAsyncClientBuilder setConnectionManager(AsyncClientConnectionManager connManager) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestAsyncClientBuilder addResponseInterceptorFirst(HttpResponseInterceptor interceptor) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
     }
 
     default TestAsyncClientBuilder addResponseInterceptorLast(HttpResponseInterceptor interceptor) {
@@ -102,6 +109,14 @@ public interface TestAsyncClientBuilder {
     }
 
     default TestAsyncClientBuilder setDefaultAuthSchemeRegistry(Lookup<AuthSchemeFactory> authSchemeRegistry) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestAsyncClientBuilder setDefaultCredentialsProvider(CredentialsProvider credentialsProvider) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestAsyncClientBuilder setUnixDomainSocket(Path unixDomainSocket) {
         throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
     }
 

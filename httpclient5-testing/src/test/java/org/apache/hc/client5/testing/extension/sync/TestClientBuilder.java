@@ -27,14 +27,17 @@
 
 package org.apache.hc.client5.testing.extension.sync;
 
+import java.nio.file.Path;
 import java.util.Collection;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
 import org.apache.hc.client5.http.HttpRequestRetryStrategy;
 import org.apache.hc.client5.http.UserTokenHandler;
 import org.apache.hc.client5.http.auth.AuthSchemeFactory;
+import org.apache.hc.client5.http.auth.CredentialsProvider;
 import org.apache.hc.client5.http.classic.ExecChainHandler;
 import org.apache.hc.client5.http.io.HttpClientConnectionManager;
+import org.apache.hc.client5.http.protocol.RedirectStrategy;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpRequestInterceptor;
 import org.apache.hc.core5.http.HttpResponseInterceptor;
@@ -50,8 +53,8 @@ public interface TestClientBuilder {
 
     TestClientBuilder setConnectionManager(HttpClientConnectionManager connManager);
 
-    default TestClientBuilder addResponseInterceptorFirst(final HttpResponseInterceptor interceptor) {
-        return this;
+    default TestClientBuilder addResponseInterceptorFirst(HttpResponseInterceptor interceptor) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
     }
 
     default TestClientBuilder addResponseInterceptorLast(HttpResponseInterceptor interceptor) {
@@ -95,6 +98,18 @@ public interface TestClientBuilder {
     }
 
     default TestClientBuilder addExecInterceptorLast(String name, ExecChainHandler interceptor) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestClientBuilder setDefaultCredentialsProvider(CredentialsProvider credentialsProvider) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestClientBuilder setUnixDomainSocket(Path unixDomainSocket) {
+        throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
+    }
+
+    default TestClientBuilder setRedirectStrategy(RedirectStrategy redirectStrategy) {
         throw new UnsupportedOperationException("Operation not supported by " + getProtocolLevel());
     }
 

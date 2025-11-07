@@ -30,9 +30,8 @@ import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.classic.ExecChain;
 import org.apache.hc.client5.http.classic.ExecRuntime;
 import org.apache.hc.client5.http.config.RequestConfig;
-import org.apache.hc.client5.http.entity.DecompressingEntity;
 import org.apache.hc.client5.http.entity.EntityBuilder;
-import org.apache.hc.client5.http.entity.GzipDecompressingEntity;
+import org.apache.hc.client5.http.entity.compress.DecompressingEntity;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.core5.http.ClassicHttpRequest;
 import org.apache.hc.core5.http.ClassicHttpResponse;
@@ -206,7 +205,7 @@ class TestContentCompressionExec {
         final HttpEntity original = EntityBuilder.create().setText("encoded stuff").setContentEncoding("whatever").build();
         response.setEntity(original);
 
-        impl = new ContentCompressionExec(false);
+        impl = new ContentCompressionExec();
 
         Mockito.when(execChain.proceed(request, scope)).thenReturn(response);
 
@@ -232,8 +231,7 @@ class TestContentCompressionExec {
         impl.execute(request, scope, execChain);
 
         final HttpEntity entity = response.getEntity();
-        Assertions.assertNotNull(entity);
-        Assertions.assertFalse(entity instanceof GzipDecompressingEntity);
+        Assertions.assertSame(original, entity);
     }
 
 }

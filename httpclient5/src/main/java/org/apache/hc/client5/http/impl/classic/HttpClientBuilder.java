@@ -29,15 +29,15 @@ package org.apache.hc.client5.http.impl.classic;
 
 import java.io.Closeable;
 import java.net.ProxySelector;
-import java.security.AccessController;
-import java.security.PrivilegedAction;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 import org.apache.hc.client5.http.AuthenticationStrategy;
 import org.apache.hc.client5.http.ConnectionKeepAliveStrategy;
@@ -55,6 +55,7 @@ import org.apache.hc.client5.http.cookie.BasicCookieStore;
 import org.apache.hc.client5.http.cookie.CookieSpecFactory;
 import org.apache.hc.client5.http.cookie.CookieStore;
 import org.apache.hc.client5.http.entity.InputStreamFactory;
+import org.apache.hc.client5.http.entity.compress.DecompressingEntity;
 import org.apache.hc.client5.http.impl.ChainElement;
 import org.apache.hc.client5.http.impl.CookieSpecSupport;
 import org.apache.hc.client5.http.impl.DefaultAuthenticationStrategy;
@@ -70,6 +71,7 @@ import org.apache.hc.client5.http.impl.auth.BasicCredentialsProvider;
 import org.apache.hc.client5.http.impl.auth.BasicSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.BearerSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.DigestSchemeFactory;
+import org.apache.hc.client5.http.impl.auth.ScramSchemeFactory;
 import org.apache.hc.client5.http.impl.auth.SystemDefaultCredentialsProvider;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.client5.http.impl.routing.DefaultProxyRoutePlanner;
@@ -89,6 +91,7 @@ import org.apache.hc.client5.http.routing.HttpRoutePlanner;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.http.ConnectionReuseStrategy;
 import org.apache.hc.core5.http.Header;
+import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequestInterceptor;
 import org.apache.hc.core5.http.HttpResponseInterceptor;
@@ -141,6 +144,8 @@ import org.apache.hc.core5.util.VersionInfo;
  * @since 4.3
  */
 public class HttpClientBuilder {
+
+    private static final TimeValue ONE_SECOND = TimeValue.ofSeconds(1L);
 
     private static class RequestInterceptorEntry {
 
@@ -830,6 +835,11 @@ public class HttpClientBuilder {
     }
 
     @Internal
+    public HttpClientConnectionManager getConnManager() {
+        return connManager;
+    }
+
+    @Internal
     protected Function<HttpContext, HttpClientContext> contextAdaptor() {
         return HttpClientContext::castOrCreate;
     }
@@ -963,18 +973,29 @@ public class HttpClientBuilder {
                 ChainElement.PROTOCOL.name());
 
         if (!contentCompressionDisabled) {
+            // Custom decoder map supplied by the caller
             if (contentDecoderMap != null) {
-                final List<String> encodings = new ArrayList<>(contentDecoderMap.keySet());
-                final RegistryBuilder<InputStreamFactory> b2 = RegistryBuilder.create();
-                for (final Map.Entry<String, InputStreamFactory> entry: contentDecoderMap.entrySet()) {
-                    b2.register(entry.getKey(), entry.getValue());
+                final List<String> encodings = new ArrayList<>(contentDecoderMap.size());
+                final RegistryBuilder<UnaryOperator<HttpEntity>> b2 = RegistryBuilder.create();
+                for (final Map.Entry<String, InputStreamFactory> entry : contentDecoderMap.entrySet()) {
+                    final String token = entry.getKey();
+                    final InputStreamFactory inputStreamFactory = entry.getValue();
+                    encodings.add(token);
+                    b2.register(token, httpEntity -> new DecompressingEntity(
+                            httpEntity,
+                            inputStreamFactory::create));
                 }
-                final Registry<InputStreamFactory> decoderRegistry = b2.build();
+                final Registry<UnaryOperator<HttpEntity>> decoderRegistry = b2.build();
+
                 execChainDefinition.addFirst(
-                        new ContentCompressionExec(encodings, decoderRegistry, true),
+                        new ContentCompressionExec(encodings, decoderRegistry),
                         ChainElement.COMPRESS.name());
+
             } else {
-                execChainDefinition.addFirst(new ContentCompressionExec(true), ChainElement.COMPRESS.name());
+                // Use the default decoders from ContentCodecRegistry
+                execChainDefinition.addFirst(
+                        new ContentCompressionExec(),
+                        ChainElement.COMPRESS.name());
             }
         }
 
@@ -1000,7 +1021,7 @@ public class HttpClientBuilder {
             } else if (this.proxySelector != null) {
                 routePlannerCopy = new SystemDefaultRoutePlanner(schemePortResolverCopy, this.proxySelector);
             } else if (systemProperties) {
-                final ProxySelector defaultProxySelector = AccessController.doPrivileged((PrivilegedAction<ProxySelector>) ProxySelector::getDefault);
+                final ProxySelector defaultProxySelector = ProxySelector.getDefault();
                 routePlannerCopy = new SystemDefaultRoutePlanner(schemePortResolverCopy, defaultProxySelector);
             } else {
                 routePlannerCopy = new DefaultRoutePlanner(schemePortResolverCopy);
@@ -1011,7 +1032,7 @@ public class HttpClientBuilder {
         if (!redirectHandlingDisabled) {
             RedirectStrategy redirectStrategyCopy = this.redirectStrategy;
             if (redirectStrategyCopy == null) {
-                redirectStrategyCopy = DefaultRedirectStrategy.INSTANCE;
+                redirectStrategyCopy = schemePortResolver != null ? new DefaultRedirectStrategy(schemePortResolver) : DefaultRedirectStrategy.INSTANCE;
             }
             execChainDefinition.addFirst(
                     new RedirectExec(routePlannerCopy, redirectStrategyCopy),
@@ -1063,10 +1084,11 @@ public class HttpClientBuilder {
                 .register(StandardAuthScheme.BASIC, BasicSchemeFactory.INSTANCE)
                 .register(StandardAuthScheme.DIGEST, DigestSchemeFactory.INSTANCE)
                 .register(StandardAuthScheme.BEARER, BearerSchemeFactory.INSTANCE)
+                .register(StandardAuthScheme.SCRAM_SHA_256, ScramSchemeFactory.INSTANCE)
                 .build();
         }
         Lookup<CookieSpecFactory> cookieSpecRegistryCopy = this.cookieSpecRegistry;
-        if (cookieSpecRegistryCopy == null) {
+        if (cookieSpecRegistryCopy == null && !this.cookieManagementDisabled) {
             cookieSpecRegistryCopy = CookieSpecSupport.createDefault();
         }
 
@@ -1091,8 +1113,10 @@ public class HttpClientBuilder {
             }
             if (evictExpiredConnections || evictIdleConnections) {
                 if (connManagerCopy instanceof ConnPoolControl) {
+                    TimeValue sleepTime = maxIdleTime.divide(10, TimeUnit.NANOSECONDS);
+                    sleepTime = sleepTime.compareTo(ONE_SECOND) < 0 ? ONE_SECOND : sleepTime;
                     final IdleConnectionEvictor connectionEvictor = new IdleConnectionEvictor((ConnPoolControl<?>) connManagerCopy,
-                            maxIdleTime, maxIdleTime);
+                            sleepTime, maxIdleTime);
                     closeablesCopy.add(() -> {
                         connectionEvictor.shutdown();
                         try {

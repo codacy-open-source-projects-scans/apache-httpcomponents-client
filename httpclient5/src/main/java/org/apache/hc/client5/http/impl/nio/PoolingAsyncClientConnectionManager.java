@@ -27,6 +27,7 @@
 
 package org.apache.hc.client5.http.impl.nio;
 
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -42,6 +43,7 @@ import org.apache.hc.client5.http.SchemePortResolver;
 import org.apache.hc.client5.http.config.ConnectionConfig;
 import org.apache.hc.client5.http.config.TlsConfig;
 import org.apache.hc.client5.http.impl.ConnPoolSupport;
+import org.apache.hc.client5.http.impl.ConnectionHolder;
 import org.apache.hc.client5.http.impl.ConnectionShutdownException;
 import org.apache.hc.client5.http.impl.PrefixedIncrementingId;
 import org.apache.hc.client5.http.nio.AsyncClientConnectionManager;
@@ -57,6 +59,7 @@ import org.apache.hc.core5.concurrent.CallbackContribution;
 import org.apache.hc.core5.concurrent.ComplexFuture;
 import org.apache.hc.core5.concurrent.FutureCallback;
 import org.apache.hc.core5.function.Resolver;
+import org.apache.hc.core5.http.HttpConnection;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpVersion;
 import org.apache.hc.core5.http.ProtocolVersion;
@@ -67,6 +70,7 @@ import org.apache.hc.core5.http.nio.AsyncClientExchangeHandler;
 import org.apache.hc.core5.http.nio.AsyncPushConsumer;
 import org.apache.hc.core5.http.nio.HandlerFactory;
 import org.apache.hc.core5.http.nio.command.RequestExecutionCommand;
+import org.apache.hc.core5.http.nio.command.StaleCheckCommand;
 import org.apache.hc.core5.http.nio.ssl.TlsStrategy;
 import org.apache.hc.core5.http.protocol.HttpContext;
 import org.apache.hc.core5.http2.HttpVersionPolicy;
@@ -75,6 +79,7 @@ import org.apache.hc.core5.http2.nio.support.BasicPingHandler;
 import org.apache.hc.core5.http2.ssl.ApplicationProtocol;
 import org.apache.hc.core5.io.CloseMode;
 import org.apache.hc.core5.pool.ConnPoolControl;
+import org.apache.hc.core5.pool.DefaultDisposalCallback;
 import org.apache.hc.core5.pool.LaxConnPool;
 import org.apache.hc.core5.pool.ManagedConnPool;
 import org.apache.hc.core5.pool.PoolConcurrencyPolicy;
@@ -179,6 +184,7 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
                         DEFAULT_MAX_TOTAL_CONNECTIONS,
                         timeToLive,
                         poolReusePolicy,
+                        new DefaultDisposalCallback<>(),
                         null) {
 
                     @Override
@@ -296,6 +302,14 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
                                 }
                             }
                             if (poolEntry.hasConnection()) {
+                                final TimeValue idleTimeout = connectionConfig.getIdleTimeout();
+                                if (TimeValue.isPositive(idleTimeout)) {
+                                    if (Deadline.calculate(poolEntry.getUpdated(), idleTimeout).isExpired()) {
+                                        poolEntry.discardConnection(CloseMode.GRACEFUL);
+                                    }
+                                }
+                            }
+                            if (poolEntry.hasConnection()) {
                                 final ManagedAsyncClientConnection connection = poolEntry.getConnection();
                                 final TimeValue timeValue = connectionConfig.getValidateAfterInactivity();
                                 if (connection.isOpen() && TimeValue.isNonNegative(timeValue)) {
@@ -313,11 +327,18 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
                                                 leaseCompleted(poolEntry);
                                             })), Command.Priority.IMMEDIATE);
                                             return;
+                                        } else {
+                                            connection.submitCommand(new StaleCheckCommand(result -> {
+                                                if (!Boolean.TRUE.equals(result)) {
+                                                    if (LOG.isDebugEnabled()) {
+                                                        LOG.debug("{} connection {} is stale", id, ConnPoolSupport.getId(connection));
+                                                    }
+                                                    poolEntry.discardConnection(CloseMode.GRACEFUL);
+                                                }
+                                                leaseCompleted(poolEntry);
+                                            }), Command.Priority.IMMEDIATE);
+                                            return;
                                         }
-                                        if (LOG.isDebugEnabled()) {
-                                            LOG.debug("{} connection {} is closed", id, ConnPoolSupport.getId(connection));
-                                        }
-                                        poolEntry.discardConnection(CloseMode.IMMEDIATE);
                                     }
                                 }
                             }
@@ -328,6 +349,9 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
                             final ManagedAsyncClientConnection connection = poolEntry.getConnection();
                             if (connection != null) {
                                 connection.activate();
+                                if (connectionConfig.getSocketTimeout() != null) {
+                                    connection.setSocketTimeout(connectionConfig.getSocketTimeout());
+                                }
                             }
                             if (LOG.isDebugEnabled()) {
                                 LOG.debug("{} endpoint leased {}", id, ConnPoolSupport.formatStats(route, state, pool));
@@ -446,6 +470,7 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
         }
         final PoolEntry<HttpRoute, ManagedAsyncClientConnection> poolEntry = internalEndpoint.getPoolEntry();
         final HttpRoute route = poolEntry.getRoute();
+        final Path unixDomainSocket = route.getUnixDomainSocket();
         final HttpHost firstHop = route.getProxyHost() != null ? route.getProxyHost() : route.getTargetHost();
         final ConnectionConfig connectionConfig = resolveConnectionConfig(route);
         final Timeout connectTimeout = timeout != null ? timeout : connectionConfig.getConnectTimeout();
@@ -456,6 +481,7 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
         final Future<ManagedAsyncClientConnection> connectFuture = connectionOperator.connect(
                 connectionInitiator,
                 firstHop,
+                unixDomainSocket,
                 route.getTargetName(),
                 route.getLocalSocketAddress(),
                 connectTimeout,
@@ -680,7 +706,7 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
 
     private static final PrefixedIncrementingId INCREMENTING_ID = new PrefixedIncrementingId("ep-");
 
-    static class InternalConnectionEndpoint extends AsyncConnectionEndpoint implements Identifiable {
+    static class InternalConnectionEndpoint extends AsyncConnectionEndpoint implements ConnectionHolder, Identifiable {
 
         private final AtomicReference<PoolEntry<HttpRoute, ManagedAsyncClientConnection>> poolEntryRef;
         private final String id;
@@ -775,6 +801,12 @@ public class PoolingAsyncClientConnectionManager implements AsyncClientConnectio
                 }
             }
             return null;
+        }
+
+        @Override
+        public HttpConnection get() {
+            final PoolEntry<HttpRoute, ManagedAsyncClientConnection> poolEntry = poolEntryRef.get();
+            return poolEntry != null ? poolEntry.getConnection() : null;
         }
 
     }

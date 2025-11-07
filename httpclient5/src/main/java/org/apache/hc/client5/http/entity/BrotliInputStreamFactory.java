@@ -29,17 +29,25 @@ package org.apache.hc.client5.http.entity;
 import java.io.IOException;
 import java.io.InputStream;
 
+import com.aayushatharva.brotli4j.decoder.BrotliInputStream;
+
 import org.apache.hc.core5.annotation.Contract;
 import org.apache.hc.core5.annotation.ThreadingBehavior;
-import org.brotli.dec.BrotliInputStream;
 
 /**
  * {@link InputStreamFactory} for handling Brotli Content Coded responses.
- *
+ * @deprecated See {@link org.apache.hc.client5.http.entity.compress.ContentCodecRegistry#decoder(org.apache.hc.client5.http.entity.compress.ContentCoding)}
  * @since 5.2
  */
 @Contract(threading = ThreadingBehavior.STATELESS)
+@Deprecated
 public class BrotliInputStreamFactory implements InputStreamFactory {
+
+    /**
+     * Canonical token for the deflate content-coding.
+     * @since 5.6
+     */
+    public static final String ENCODING = "br";
 
     /**
      * Default instance of {@link BrotliInputStreamFactory}.

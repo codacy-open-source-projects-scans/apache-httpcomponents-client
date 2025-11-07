@@ -78,9 +78,8 @@ class TestMultipartFormHttpEntity {
         final String boundary = p1.getValue();
         Assertions.assertNotNull(boundary);
 
-        Assertions.assertTrue(boundary.length() >= 30);
-        Assertions.assertTrue(boundary.length() <= 40);
-
+        // "httpclient_boundary_" + UUID (32 characters + 4 dashes) + 56 characters
+        Assertions.assertEquals(56, boundary.length());
         final NameValuePair p2 = elem.getParameterByName("charset");
         Assertions.assertNull(p2);
     }

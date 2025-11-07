@@ -29,39 +29,53 @@ package org.apache.hc.client5.http.entity.mime;
 
 import java.io.File;
 import java.io.InputStream;
-import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.UUID;
 
 import org.apache.hc.core5.http.ContentType;
 import org.apache.hc.core5.http.HttpEntity;
 import org.apache.hc.core5.http.NameValuePair;
 import org.apache.hc.core5.http.message.BasicNameValuePair;
 import org.apache.hc.core5.util.Args;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Builder for multipart {@link HttpEntity}s.
+ * <p>
+ * This class constructs multipart entities with a boundary determined by either a random UUID
+ * or an explicit boundary set via {@link #setBoundary(String)}.
+ * </p>
+ * <p>
+ *  IMPORTANT: it is responsibility of the caller to validate / sanitize content of body
+ *  parts. For instance, when using an explicit boundary, it's the caller's responsibility to
+ *  ensure the body parts do not contain the boundary value, which can prevent the consumer of
+ *  the entity from correctly parsing / processing the body parts.
+ * </p>
  *
  * @since 5.0
  */
     public class MultipartEntityBuilder {
-
-    /**
-     * The pool of ASCII chars to be used for generating a multipart boundary.
-     */
-    private final static char[] MULTIPART_CHARS =
-            "-_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                    .toCharArray();
 
     private ContentType contentType;
     private HttpMultipartMode mode = HttpMultipartMode.STRICT;
     private String boundary;
     private Charset charset;
     private List<MultipartPart> multipartParts;
+
+
+    private static final String BOUNDARY_PREFIX = "httpclient_boundary_";
+
+    /**
+     * The logger for this class.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(MultipartEntityBuilder.class);
+
 
     /**
      * The preamble of the multipart message.
@@ -104,6 +118,19 @@ import org.apache.hc.core5.util.Args;
         return this;
     }
 
+    /**
+     * Sets a custom boundary string for the multipart entity.
+     * <p>
+     * If {@code null} is provided, the builder reverts to its default logic of using a random UUID.
+     * </p>
+     * <p>
+     * IMPORTANT: when setting an explicit boundary, it is responsibility of the caller to validate / sanitize content
+     * of body parts to ensure they do not contain the boundary value.
+     * </p>
+     *
+     * @param boundary the boundary string, or {@code null} to use a random UUID.
+     * @return this builder instance
+     */
     public MultipartEntityBuilder setBoundary(final String boundary) {
         this.boundary = boundary;
         return this;
@@ -189,6 +216,32 @@ import org.apache.hc.core5.util.Args;
         return addPart(name, new FileBody(file, contentType, filename));
     }
 
+    /**
+     * Adds body with contents from the given source Path.
+     *
+     * @param name The part name.
+     * @param path The source path.
+     * @return {@code this} instance.
+     * @since 5.6
+     */
+    public MultipartEntityBuilder addBinaryBody(final String name, final Path path) {
+        return addBinaryBody(name, path, ContentType.DEFAULT_BINARY, path != null ? path.getFileName().toString() : null);
+    }
+
+    /**
+     * Adds body with contents from the given source Path.
+     *
+     * @param name        The part name.
+     * @param path        The source path.
+     * @param contentType The content type.
+     * @param fileName    The file name to override the Path's file name.
+     * @return {@code this} instance.
+     * @since 5.6
+     */
+    public MultipartEntityBuilder addBinaryBody(final String name, final Path path, final ContentType contentType, final String fileName) {
+        return addPart(name, new PathBody(path, contentType, fileName));
+    }
+
     public MultipartEntityBuilder addBinaryBody(
             final String name, final File file) {
         return addBinaryBody(name, file, ContentType.DEFAULT_BINARY, file != null ? file.getName() : null);
@@ -202,6 +255,18 @@ import org.apache.hc.core5.util.Args;
 
     public MultipartEntityBuilder addBinaryBody(final String name, final InputStream stream) {
         return addBinaryBody(name, stream, ContentType.DEFAULT_BINARY, null);
+    }
+
+    /**
+     * Generates a random boundary using UUID. The UUID is a v4 random UUID generated from a cryptographically-secure
+     * random source.
+     * <p>
+     * A cryptographically-secure random number source is used to generate the UUID, to avoid a malicious actor crafting
+     * a body part that contains the boundary value to tamper with the entity structure.
+     * </p>
+     */
+    private String getRandomBoundary() {
+        return BOUNDARY_PREFIX + UUID.randomUUID();
     }
 
     /**
@@ -231,24 +296,13 @@ import org.apache.hc.core5.util.Args;
         return this;
     }
 
-    private String generateBoundary() {
-        final ThreadLocalRandom rand = ThreadLocalRandom.current();
-        final int count = rand.nextInt(30, 41); // a random size from 30 to 40
-        final CharBuffer buffer = CharBuffer.allocate(count);
-        while (buffer.hasRemaining()) {
-            buffer.put(MULTIPART_CHARS[rand.nextInt(MULTIPART_CHARS.length)]);
-        }
-        buffer.flip();
-        return buffer.toString();
-    }
-
     MultipartFormEntity buildEntity() {
         String boundaryCopy = boundary;
         if (boundaryCopy == null && contentType != null) {
             boundaryCopy = contentType.getParameter("boundary");
         }
         if (boundaryCopy == null) {
-            boundaryCopy = generateBoundary();
+            boundaryCopy = getRandomBoundary();
         }
         Charset charsetCopy = charset;
         if (charsetCopy == null && contentType != null) {
@@ -289,7 +343,7 @@ import org.apache.hc.core5.util.Args;
                     if (charsetCopy == null) {
                         charsetCopy = StandardCharsets.UTF_8;
                     }
-                    form = new HttpRFC7578Multipart(charsetCopy, boundaryCopy, multipartPartsCopy, preamble, epilogue);
+                    form = new HttpRFC7578Multipart(charsetCopy, boundaryCopy, multipartPartsCopy, preamble, epilogue, modeCopy);
                 } else {
                     form = new HttpRFC6532Multipart(charsetCopy, boundaryCopy, multipartPartsCopy, preamble, epilogue);
                 }
