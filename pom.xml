@@ -33,7 +33,7 @@
   <groupId>org.apache.httpcomponents.client5</groupId>
   <artifactId>httpclient5-parent</artifactId>
   <name>Apache HttpComponents Client Parent</name>
-  <version>5.6-alpha2-SNAPSHOT</version>
+  <version>5.7-alpha1-SNAPSHOT</version>
   <description>Apache HttpComponents Client is a library of components for building client side HTTP services</description>
   <url>https://hc.apache.org/httpcomponents-client-5.5.x/${project.version}/</url>
   <inceptionYear>1999</inceptionYear>
@@ -48,10 +48,10 @@
     <connection>scm:git:https://gitbox.apache.org/repos/asf/httpcomponents-client.git</connection>
     <developerConnection>scm:git:https://gitbox.apache.org/repos/asf/httpcomponents-client.git</developerConnection>
     <url>https://github.com/apache/httpcomponents-client/tree/${project.scm.tag}</url>
-    <tag>5.6-alpha2-SNAPSHOT</tag>
+    <tag>5.7-alpha1-SNAPSHOT</tag>
   </scm>
 
- <distributionManagement>
+  <distributionManagement>
     <site>
       <id>apache.website</id>
       <name>Apache HttpComponents Website</name>
@@ -62,7 +62,7 @@
   <properties>
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
-    <httpcore.version>5.4-alpha1</httpcore.version>
+    <httpcore.version>5.4</httpcore.version>
     <log4j.version>2.25.2</log4j.version>
     <brotli4j.version>1.20.0</brotli4j.version>
     <conscrypt.version>2.5.2</conscrypt.version>
@@ -128,6 +128,11 @@
       <dependency>
         <groupId>org.apache.httpcomponents.client5</groupId>
         <artifactId>httpclient5-fluent</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.client5</groupId>
+        <artifactId>httpclient5-sse</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
@@ -220,37 +225,34 @@
         <groupId>io.micrometer</groupId>
         <artifactId>micrometer-core</artifactId>
         <version>${micrometer.version}</version>
-        <optional>true</optional>
       </dependency>
       <dependency>
         <groupId>io.micrometer</groupId>
         <artifactId>micrometer-observation</artifactId>
         <version>${micrometer.version}</version>
-        <optional>true</optional>
       </dependency>
       <dependency>
         <groupId>io.micrometer</groupId>
         <artifactId>micrometer-registry-prometheus</artifactId>
         <version>${micrometer.version}</version>
-        <optional>true</optional>
+      </dependency>
+      <dependency>
+        <groupId>io.micrometer</groupId>
+        <artifactId>micrometer-tracing</artifactId>
+        <version>${micrometer.tracing.version}</version>
+        <scope>test</scope>
       </dependency>
       <dependency>
         <groupId>io.micrometer</groupId>
         <artifactId>micrometer-tracing-bridge-otel</artifactId>
         <version>${micrometer.tracing.version}</version>
-        <optional>true</optional>
       </dependency>
       <dependency>
         <groupId>io.opentelemetry</groupId>
-        <artifactId>opentelemetry-sdk</artifactId>
+        <artifactId>opentelemetry-bom</artifactId>
         <version>${otel.version}</version>
-        <optional>true</optional>
-      </dependency>
-      <dependency>
-        <groupId>io.opentelemetry</groupId>
-        <artifactId>opentelemetry-sdk-testing</artifactId>
-        <version>${otel.version}</version>
-        <scope>test</scope>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
       <dependency>
         <groupId>com.aayushatharva.brotli4j</groupId>
@@ -268,6 +270,7 @@
 
   <modules>
     <module>httpclient5</module>
+    <module>httpclient5-sse</module>
     <module>httpclient5-observation</module>
     <module>httpclient5-fluent</module>
     <module>httpclient5-cache</module>
@@ -487,6 +490,15 @@
               <title>Apache HttpClient Windows features</title>
               <packages>org.apache.hc.client5.http.impl.win*</packages>
             </group>
+            <group>
+              <title>Apache HttpClient Observations</title>
+              <packages>org.apache.hc.client5.http.observation*</packages>
+            </group>
+            <group>
+              <title>Apache HttpClient SSE</title>
+              <packages>org.apache.hc.client5.http.sse*</packages>
+            </group>
+
           </groups>
         </configuration>
         <reportSets>

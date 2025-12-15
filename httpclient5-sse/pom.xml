@@ -30,14 +30,14 @@
     <artifactId>httpclient5-parent</artifactId>
     <version>5.7-alpha1-SNAPSHOT</version>
   </parent>
-  <artifactId>httpclient5-fluent</artifactId>
-  <name>Apache HttpClient Fluent</name>
+  <artifactId>httpclient5-sse</artifactId>
+  <name>Apache HttpClient sse</name>
   <inceptionYear>2011</inceptionYear>
-  <description>Apache HttpComponents Client Fluent</description>
+  <description>Apache HttpComponents Client Server-Sent</description>
   <packaging>jar</packaging>
 
   <properties>
-    <Automatic-Module-Name>org.apache.httpcomponents.client5.httpclient5.fluent</Automatic-Module-Name>
+    <Automatic-Module-Name>org.apache.httpcomponents.client5.httpclient5.sse</Automatic-Module-Name>
   </properties>
 
   <dependencies>
@@ -100,5 +100,19 @@
       </plugin>
     </plugins>
   </reporting>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>com.github.siom79.japicmp</groupId>
+        <artifactId>japicmp-maven-plugin</artifactId>
+        <version>0.21.2</version>
+        <configuration>
+          <skip>true</skip>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
 
 </project>
