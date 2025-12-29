@@ -267,6 +267,8 @@ public class HttpAsyncClientBuilder {
 
     private ProxySelector proxySelector;
 
+    private int maxQueuedRequests = -1;
+
     private EarlyHintsListener earlyHintsListener;
 
     private boolean priorityHeaderDisabled;
@@ -864,7 +866,7 @@ public class HttpAsyncClientBuilder {
      */
     public final HttpAsyncClientBuilder evictIdleConnections(final TimeValue maxIdleTime) {
         this.evictIdleConnections = true;
-        this.maxIdleTime = maxIdleTime;
+        this.maxIdleTime = Args.notNull(maxIdleTime, "Max idle time");
         return this;
     }
 
@@ -898,6 +900,23 @@ public class HttpAsyncClientBuilder {
         this.contentCompressionDisabled = true;
         return this;
     }
+
+    /**
+     * Sets a hard cap on the number of requests allowed to be queued/in-flight
+     * within the internal async execution pipeline. When the limit is reached,
+     * new submissions fail fast with {@link java.util.concurrent.RejectedExecutionException}.
+     * A value <= 0 means unlimited (default).
+     *
+     * @param max maximum number of queued requests; <= 0 to disable the cap
+     * @return this builder
+     * @since 5.7
+     */
+    @Experimental
+    public HttpAsyncClientBuilder setMaxQueuedRequests(final int max) {
+        this.maxQueuedRequests = max;
+        return this;
+    }
+
 
     /**
      * Disable installing the HTTP/2 Priority header interceptor by default.
@@ -1144,10 +1163,11 @@ public class HttpAsyncClientBuilder {
             }
             if (evictExpiredConnections || evictIdleConnections) {
                 if (connManagerCopy instanceof ConnPoolControl) {
-                    TimeValue sleepTime = maxIdleTime.divide(10, TimeUnit.NANOSECONDS);
+                    final TimeValue maxIdleTimeCopy = evictIdleConnections ? maxIdleTime : null;
+                    TimeValue sleepTime = maxIdleTimeCopy != null ? maxIdleTimeCopy.divide(10, TimeUnit.NANOSECONDS) : ONE_SECOND;
                     sleepTime = sleepTime.compareTo(ONE_SECOND) < 0 ? ONE_SECOND : sleepTime;
                     final IdleConnectionEvictor connectionEvictor = new IdleConnectionEvictor((ConnPoolControl<?>) connManagerCopy,
-                            sleepTime, maxIdleTime);
+                            sleepTime, maxIdleTimeCopy);
                     closeablesCopy.add(connectionEvictor::shutdown);
                     connectionEvictor.start();
                 }
@@ -1260,7 +1280,8 @@ public class HttpAsyncClientBuilder {
                 credentialsProviderCopy,
                 contextAdaptor(),
                 defaultRequestConfig,
-                closeablesCopy);
+                closeablesCopy,
+                maxQueuedRequests);
     }
 
 }
