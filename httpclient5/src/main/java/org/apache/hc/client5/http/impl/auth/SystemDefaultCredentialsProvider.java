@@ -36,7 +36,6 @@ import java.net.URL;
 import org.apache.hc.client5.http.auth.AuthScope;
 import org.apache.hc.client5.http.auth.Credentials;
 import org.apache.hc.client5.http.auth.CredentialsStore;
-import org.apache.hc.client5.http.auth.StandardAuthScheme;
 import org.apache.hc.client5.http.auth.UsernamePasswordCredentials;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.core5.annotation.Contract;
@@ -107,64 +106,15 @@ public class SystemDefaultCredentialsProvider implements CredentialsStore {
         if (host != null) {
             final HttpClientContext clientContext = context != null ? HttpClientContext.cast(context) : null;
             final String protocol = authScope.getProtocol() != null ? authScope.getProtocol() : (authScope.getPort() == 443 ? URIScheme.HTTPS.id : URIScheme.HTTP.id);
-            PasswordAuthentication systemcreds = getSystemCreds(
-                    protocol, authScope, Authenticator.RequestorType.SERVER, clientContext);
-            if (systemcreds == null) {
-                systemcreds = getSystemCreds(
-                        protocol, authScope, Authenticator.RequestorType.PROXY, clientContext);
+            final PasswordAuthentication serverCreds = getSystemCreds(protocol, authScope, Authenticator.RequestorType.SERVER, clientContext);
+            if (serverCreds != null) {
+                return new UsernamePasswordCredentials(serverCreds.getUserName(), serverCreds.getPassword());
             }
-            if (systemcreds == null) {
-                // Look for values given using http.proxyUser/http.proxyPassword or
-                // https.proxyUser/https.proxyPassword. We cannot simply use the protocol from
-                // the origin since a proxy retrieved from https.proxyHost/https.proxyPort will
-                // still use http as protocol
-                systemcreds = getProxyCredentials(URIScheme.HTTP.getId(), authScope);
-                if (systemcreds == null) {
-                    systemcreds = getProxyCredentials(URIScheme.HTTPS.getId(), authScope);
-                }
-            }
-            if (systemcreds != null) {
-                final String domain = System.getProperty("http.auth.ntlm.domain");
-                if (domain != null) {
-                    return new org.apache.hc.client5.http.auth.NTCredentials(
-                            systemcreds.getUserName(), systemcreds.getPassword(), null, domain);
-                }
-                if (StandardAuthScheme.NTLM.equalsIgnoreCase(authScope.getSchemeName())) {
-                    // Domain may be specified in a fully qualified user name
-                    return new org.apache.hc.client5.http.auth.NTCredentials(
-                            systemcreds.getUserName(), systemcreds.getPassword(), null, null);
-                }
-                return new UsernamePasswordCredentials(systemcreds.getUserName(), systemcreds.getPassword());
+            final PasswordAuthentication proxyCreds = getSystemCreds(protocol, authScope, Authenticator.RequestorType.PROXY, clientContext);
+            if (proxyCreds != null) {
+                return new UsernamePasswordCredentials(proxyCreds.getUserName(), proxyCreds.getPassword());
             }
         }
-        return null;
-    }
-
-    private static PasswordAuthentication getProxyCredentials(final String protocol, final AuthScope authScope) {
-        final String proxyHost = System.getProperty(protocol + ".proxyHost");
-        if (proxyHost == null) {
-            return null;
-        }
-        final String proxyPort = System.getProperty(protocol + ".proxyPort");
-        if (proxyPort == null) {
-            return null;
-        }
-
-        try {
-            final AuthScope systemScope = new AuthScope(proxyHost, Integer.parseInt(proxyPort));
-            if (authScope.match(systemScope) >= 0) {
-                final String proxyUser = System.getProperty(protocol + ".proxyUser");
-                if (proxyUser == null) {
-                    return null;
-                }
-                final String proxyPassword = System.getProperty(protocol + ".proxyPassword");
-
-                return new PasswordAuthentication(proxyUser,
-                        proxyPassword != null ? proxyPassword.toCharArray() : new char[] {});
-            }
-        } catch (final NumberFormatException ignore) {
-        }
-
         return null;
     }
 

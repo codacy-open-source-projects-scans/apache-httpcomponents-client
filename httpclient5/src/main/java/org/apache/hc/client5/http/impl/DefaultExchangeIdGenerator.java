@@ -26,20 +26,22 @@
  */
 package org.apache.hc.client5.http.impl;
 
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Isolated;
+import org.apache.hc.core5.annotation.Contract;
+import org.apache.hc.core5.annotation.ThreadingBehavior;
+import org.apache.hc.core5.function.Supplier;
 
-@Isolated
-class ExecSupportTest {
+/**
+ * Default implementation of {@link Supplier} for generating exchange IDs.
+ *
+ * @since 5.7
+ */
+@Contract(threading = ThreadingBehavior.STATELESS)
+public class DefaultExchangeIdGenerator implements Supplier<String> {
 
-    @Test
-    void testGetNextExchangeId() {
-        final long base = ExecSupport.getNextExecNumber();
-        for (int i = 1; i <= 1_000_000; i++) {
-            Assertions.assertEquals(
-                String.format("ex-%010d", i + base),
-                ExecSupport.getNextExchangeId());
-        }
+    public static final Supplier<String> INSTANCE = new DefaultExchangeIdGenerator();
+
+    @Override
+    public String get() {
+        return ExecSupport.getNextExchangeId();
     }
 }

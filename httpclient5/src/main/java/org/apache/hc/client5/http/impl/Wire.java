@@ -29,6 +29,7 @@ package org.apache.hc.client5.http.impl;
 
 import java.nio.ByteBuffer;
 
+import org.apache.hc.client5.http.utils.Hex;
 import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.util.Args;
 import org.slf4j.Logger;
@@ -89,11 +90,11 @@ public class Wire {
                 buffer.append("[\\n]\"");
                 buffer.insert(0, "\"");
                 buffer.insert(0, header);
-                log.debug("{} {}", this.id, buffer);
+                log.debug("{} {}", this.id, buffer.toString());
                 buffer.setLength(0);
             } else if (ch < 32 || ch >= 127) {
                 buffer.append("[0x");
-                buffer.append(Integer.toHexString(ch));
+                buffer.append(Hex.encodeHexString(new byte[]{(byte) ch}));
                 buffer.append("]");
             } else {
                 buffer.append((char) ch);
@@ -103,7 +104,7 @@ public class Wire {
             buffer.append('\"');
             buffer.insert(0, '\"');
             buffer.insert(0, header);
-            log.debug("{} {}", this.id, buffer);
+            log.debug("{} {}", this.id, buffer.toString());
         }
     }
 

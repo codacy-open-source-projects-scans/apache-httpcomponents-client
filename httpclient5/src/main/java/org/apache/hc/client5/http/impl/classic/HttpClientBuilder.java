@@ -35,7 +35,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
@@ -61,6 +60,7 @@ import org.apache.hc.client5.http.impl.CookieSpecSupport;
 import org.apache.hc.client5.http.impl.DefaultAuthenticationStrategy;
 import org.apache.hc.client5.http.impl.DefaultClientConnectionReuseStrategy;
 import org.apache.hc.client5.http.impl.DefaultConnectionKeepAliveStrategy;
+import org.apache.hc.client5.http.impl.DefaultExchangeIdGenerator;
 import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy;
 import org.apache.hc.client5.http.impl.DefaultRedirectStrategy;
 import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
@@ -89,6 +89,7 @@ import org.apache.hc.client5.http.protocol.RequestValidateTrace;
 import org.apache.hc.client5.http.protocol.ResponseProcessCookies;
 import org.apache.hc.client5.http.routing.HttpRoutePlanner;
 import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.function.Supplier;
 import org.apache.hc.core5.http.ConnectionReuseStrategy;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpEntity;
@@ -132,8 +133,6 @@ import org.apache.hc.core5.util.VersionInfo;
  *  <li>http.proxyUser</li>
  *  <li>https.proxyPassword</li>
  *  <li>http.proxyPassword</li>
- *  <li>http.keepAlive</li>
- *  <li>http.agent</li>
  * </ul>
  * <p>
  * Please note that some settings used by this class can be mutually
@@ -144,8 +143,6 @@ import org.apache.hc.core5.util.VersionInfo;
  * @since 4.3
  */
 public class HttpClientBuilder {
-
-    private static final TimeValue ONE_SECOND = TimeValue.ofSeconds(1L);
 
     private static class RequestInterceptorEntry {
 
@@ -196,6 +193,7 @@ public class HttpClientBuilder {
     }
 
     private HttpRequestExecutor requestExec;
+    private Supplier<String> exchangeIdGenerator;
     private HttpClientConnectionManager connManager;
     private boolean connManagerShared;
     private SchemePortResolver schemePortResolver;
@@ -237,6 +235,8 @@ public class HttpClientBuilder {
     private boolean defaultUserAgentDisabled;
     private ProxySelector proxySelector;
 
+    private boolean tlsRequired;
+
     private List<Closeable> closeables;
 
     public static HttpClientBuilder create() {
@@ -254,6 +254,17 @@ public class HttpClientBuilder {
      */
     public final HttpClientBuilder setRequestExecutor(final HttpRequestExecutor requestExec) {
         this.requestExec = requestExec;
+        return this;
+    }
+
+    /**
+     * Sets exchange ID generator instance.
+     *
+     * @return this instance.
+     * @since 5.7
+     */
+    public final HttpClientBuilder setExchangeIdGenerator(final Supplier<String> exchangeIdGenerator) {
+        this.exchangeIdGenerator = exchangeIdGenerator;
         return this;
     }
 
@@ -808,6 +819,20 @@ public class HttpClientBuilder {
     }
 
     /**
+     * When enabled, the client refuses to establish cleartext connections.
+     * This disables plain {@code http://}, {@code h2c}, and RFC 2817 TLS upgrade paths.
+     *
+     * @param tlsRequired whether to enforce TLS-required routes.
+     * @return this instance.
+     *
+     * @since 5.7
+     */
+    public final HttpClientBuilder setTlsRequired(final boolean tlsRequired) {
+        this.tlsRequired = tlsRequired;
+        return this;
+    }
+
+    /**
      * Request exec chain customization and extension.
      * <p>
      * For internal use.
@@ -851,6 +876,10 @@ public class HttpClientBuilder {
         if (requestExecCopy == null) {
             requestExecCopy = new HttpRequestExecutor();
         }
+        Supplier<String> exchangeIdGeneratorCopy = this.exchangeIdGenerator;
+        if (exchangeIdGeneratorCopy == null) {
+            exchangeIdGeneratorCopy = DefaultExchangeIdGenerator.INSTANCE;
+        }
         HttpClientConnectionManager connManagerCopy = this.connManager;
         if (connManagerCopy == null) {
             final PoolingHttpClientConnectionManagerBuilder connectionManagerBuilder = PoolingHttpClientConnectionManagerBuilder.create();
@@ -861,16 +890,7 @@ public class HttpClientBuilder {
         }
         ConnectionReuseStrategy reuseStrategyCopy = this.reuseStrategy;
         if (reuseStrategyCopy == null) {
-            if (systemProperties) {
-                final String s = System.getProperty("http.keepAlive", "true");
-                if ("true".equalsIgnoreCase(s)) {
-                    reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
-                } else {
-                    reuseStrategyCopy = (request, response, context) -> false;
-                }
-            } else {
-                reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
-            }
+            reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
         }
 
         ConnectionKeepAliveStrategy keepAliveStrategyCopy = this.keepAliveStrategy;
@@ -896,13 +916,8 @@ public class HttpClientBuilder {
 
         String userAgentCopy = this.userAgent;
         if (userAgentCopy == null) {
-            if (systemProperties) {
-                userAgentCopy = System.getProperty("http.agent");
-            }
-            if (userAgentCopy == null && !defaultUserAgentDisabled) {
-                userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpClient",
-                        "org.apache.hc.client5", getClass());
-            }
+            userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpClient",
+                    "org.apache.hc.client5", getClass());
         }
 
         final HttpProcessorBuilder b = HttpProcessorBuilder.create();
@@ -997,6 +1012,10 @@ public class HttpClientBuilder {
                         new ContentCompressionExec(),
                         ChainElement.COMPRESS.name());
             }
+        }
+
+        if (this.tlsRequired) {
+            execChainDefinition.addFirst(new TlsRequiredExec(), ChainElement.TLS_REQUIRED.name());
         }
 
         // Add request retry executor, if not disabled
@@ -1113,11 +1132,8 @@ public class HttpClientBuilder {
             }
             if (evictExpiredConnections || evictIdleConnections) {
                 if (connManagerCopy instanceof ConnPoolControl) {
-                    final TimeValue maxIdleTimeCopy = evictIdleConnections ? maxIdleTime : null;
-                    TimeValue sleepTime = maxIdleTimeCopy != null ? maxIdleTimeCopy.divide(10, TimeUnit.NANOSECONDS) : ONE_SECOND;
-                    sleepTime = sleepTime.compareTo(ONE_SECOND) < 0 ? ONE_SECOND : sleepTime;
                     final IdleConnectionEvictor connectionEvictor = new IdleConnectionEvictor((ConnPoolControl<?>) connManagerCopy,
-                            sleepTime, maxIdleTimeCopy);
+                            null, evictIdleConnections ? maxIdleTime : null);
                     closeablesCopy.add(() -> {
                         connectionEvictor.shutdown();
                         try {
@@ -1135,6 +1151,7 @@ public class HttpClientBuilder {
         return new InternalHttpClient(
                 connManagerCopy,
                 requestExecCopy,
+                exchangeIdGeneratorCopy,
                 execChain,
                 routePlannerCopy,
                 cookieSpecRegistryCopy,

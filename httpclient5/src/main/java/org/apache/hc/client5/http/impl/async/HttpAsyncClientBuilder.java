@@ -35,7 +35,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
@@ -59,6 +58,7 @@ import org.apache.hc.client5.http.impl.CookieSpecSupport;
 import org.apache.hc.client5.http.impl.DefaultAuthenticationStrategy;
 import org.apache.hc.client5.http.impl.DefaultClientConnectionReuseStrategy;
 import org.apache.hc.client5.http.impl.DefaultConnectionKeepAliveStrategy;
+import org.apache.hc.client5.http.impl.DefaultExchangeIdGenerator;
 import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy;
 import org.apache.hc.client5.http.impl.DefaultRedirectStrategy;
 import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
@@ -91,6 +91,7 @@ import org.apache.hc.core5.annotation.Internal;
 import org.apache.hc.core5.concurrent.DefaultThreadFactory;
 import org.apache.hc.core5.function.Callback;
 import org.apache.hc.core5.function.Decorator;
+import org.apache.hc.core5.function.Supplier;
 import org.apache.hc.core5.http.ConnectionReuseStrategy;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHost;
@@ -148,8 +149,6 @@ import org.apache.hc.core5.util.VersionInfo;
  *  <li>https.proxyHost</li>
  *  <li>https.proxyPort</li>
  *  <li>http.nonProxyHosts</li>
- *  <li>http.keepAlive</li>
- *  <li>http.agent</li>
  * </ul>
  * <p>
  * Please note that some settings used by this class can be mutually
@@ -160,8 +159,6 @@ import org.apache.hc.core5.util.VersionInfo;
  * @since 5.0
  */
 public class HttpAsyncClientBuilder {
-
-    private static final TimeValue ONE_SECOND = TimeValue.ofSeconds(1L);
 
     private static class RequestInterceptorEntry {
 
@@ -235,6 +232,7 @@ public class HttpAsyncClientBuilder {
     private LinkedList<ResponseInterceptorEntry> responseInterceptors;
     private LinkedList<ExecInterceptorEntry> execInterceptors;
 
+    private Supplier<String> exchangeIdGenerator;
     private HttpRoutePlanner routePlanner;
     private RedirectStrategy redirectStrategy;
     private HttpRequestRetryStrategy retryStrategy;
@@ -272,6 +270,8 @@ public class HttpAsyncClientBuilder {
     private EarlyHintsListener earlyHintsListener;
 
     private boolean priorityHeaderDisabled;
+
+    private boolean tlsRequired;
 
 
     /**
@@ -696,6 +696,17 @@ public class HttpAsyncClientBuilder {
     }
 
     /**
+     * Sets exchange ID generator instance.
+     *
+     * @return this instance.
+     * @since 5.7
+     */
+    public final HttpAsyncClientBuilder setExchangeIdGenerator(final Supplier<String> exchangeIdGenerator) {
+        this.exchangeIdGenerator = exchangeIdGenerator;
+        return this;
+    }
+
+    /**
      * Sets {@link HttpRoutePlanner} instance.
      *
      * @return this instance.
@@ -902,6 +913,20 @@ public class HttpAsyncClientBuilder {
     }
 
     /**
+     * When enabled, the client refuses to establish cleartext connections.
+     * This disables plain {@code http://}, {@code h2c}, and RFC 2817 TLS upgrade paths.
+     *
+     * @param tlsRequired whether to enforce TLS-required routes.
+     * @return this instance.
+     *
+     * @since 5.7
+     */
+    public final HttpAsyncClientBuilder setTlsRequired(final boolean tlsRequired) {
+        this.tlsRequired = tlsRequired;
+        return this;
+    }
+
+    /**
      * Sets a hard cap on the number of requests allowed to be queued/in-flight
      * within the internal async execution pipeline. When the limit is reached,
      * new submissions fail fast with {@link java.util.concurrent.RejectedExecutionException}.
@@ -1017,13 +1042,8 @@ public class HttpAsyncClientBuilder {
 
         String userAgentCopy = this.userAgent;
         if (userAgentCopy == null) {
-            if (systemProperties) {
-                userAgentCopy = System.getProperty("http.agent", null);
-            }
-            if (userAgentCopy == null) {
-                userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
-                        "org.apache.hc.client5", getClass());
-            }
+            userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
+                    "org.apache.hc.client5", getClass());
         }
 
         final HttpProcessorBuilder b = HttpProcessorBuilder.create();
@@ -1103,6 +1123,7 @@ public class HttpAsyncClientBuilder {
                         authCachingDisabled),
                 ChainElement.PROTOCOL.name());
 
+
         // Add request retry executor, if not disabled
         if (!automaticRetriesDisabled) {
             HttpRequestRetryStrategy retryStrategyCopy = this.retryStrategy;
@@ -1126,6 +1147,14 @@ public class HttpAsyncClientBuilder {
             }
         }
 
+        if (this.tlsRequired) {
+            execChainDefinition.addFirst(new TlsRequiredAsyncExec(), ChainElement.TLS_REQUIRED.name());
+        }
+
+        Supplier<String> exchangeIdGeneratorCopy = this.exchangeIdGenerator;
+        if (exchangeIdGeneratorCopy == null) {
+            exchangeIdGeneratorCopy = DefaultExchangeIdGenerator.INSTANCE;
+        }
 
         HttpRoutePlanner routePlannerCopy = this.routePlanner;
         if (routePlannerCopy == null) {
@@ -1163,11 +1192,8 @@ public class HttpAsyncClientBuilder {
             }
             if (evictExpiredConnections || evictIdleConnections) {
                 if (connManagerCopy instanceof ConnPoolControl) {
-                    final TimeValue maxIdleTimeCopy = evictIdleConnections ? maxIdleTime : null;
-                    TimeValue sleepTime = maxIdleTimeCopy != null ? maxIdleTimeCopy.divide(10, TimeUnit.NANOSECONDS) : ONE_SECOND;
-                    sleepTime = sleepTime.compareTo(ONE_SECOND) < 0 ? ONE_SECOND : sleepTime;
                     final IdleConnectionEvictor connectionEvictor = new IdleConnectionEvictor((ConnPoolControl<?>) connManagerCopy,
-                            sleepTime, maxIdleTimeCopy);
+                            null, evictIdleConnections ? maxIdleTime : null);
                     closeablesCopy.add(connectionEvictor::shutdown);
                     connectionEvictor.start();
                 }
@@ -1176,16 +1202,7 @@ public class HttpAsyncClientBuilder {
         }
         ConnectionReuseStrategy reuseStrategyCopy = this.reuseStrategy;
         if (reuseStrategyCopy == null) {
-            if (systemProperties) {
-                final String s = System.getProperty("http.keepAlive", "true");
-                if ("true".equalsIgnoreCase(s)) {
-                    reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
-                } else {
-                    reuseStrategyCopy = (request, response, context) -> false;
-                }
-            } else {
-                reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
-            }
+            reuseStrategyCopy = DefaultClientConnectionReuseStrategy.INSTANCE;
         }
         final AsyncPushConsumerRegistry pushConsumerRegistry = new AsyncPushConsumerRegistry();
         final IOEventHandlerFactory ioEventHandlerFactory = new HttpAsyncClientProtocolNegotiationStarter(
@@ -1272,6 +1289,7 @@ public class HttpAsyncClientBuilder {
                 pushConsumerRegistry,
                 threadFactory != null ? threadFactory : new DefaultThreadFactory("httpclient-main", true),
                 connManagerCopy,
+                exchangeIdGeneratorCopy,
                 routePlannerCopy,
                 tlsConfig,
                 cookieSpecRegistryCopy,

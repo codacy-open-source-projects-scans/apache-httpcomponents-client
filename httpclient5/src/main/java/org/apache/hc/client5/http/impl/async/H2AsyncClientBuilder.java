@@ -51,6 +51,7 @@ import org.apache.hc.client5.http.cookie.CookieStore;
 import org.apache.hc.client5.http.impl.ChainElement;
 import org.apache.hc.client5.http.impl.CookieSpecSupport;
 import org.apache.hc.client5.http.impl.DefaultAuthenticationStrategy;
+import org.apache.hc.client5.http.impl.DefaultExchangeIdGenerator;
 import org.apache.hc.client5.http.impl.DefaultHttpRequestRetryStrategy;
 import org.apache.hc.client5.http.impl.DefaultRedirectStrategy;
 import org.apache.hc.client5.http.impl.DefaultSchemePortResolver;
@@ -76,6 +77,7 @@ import org.apache.hc.core5.concurrent.DefaultThreadFactory;
 import org.apache.hc.core5.function.Callback;
 import org.apache.hc.core5.function.Decorator;
 import org.apache.hc.core5.function.Resolver;
+import org.apache.hc.core5.function.Supplier;
 import org.apache.hc.core5.http.Header;
 import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.HttpRequestInterceptor;
@@ -182,6 +184,7 @@ public class H2AsyncClientBuilder {
     private LinkedList<ResponseInterceptorEntry> responseInterceptors;
     private LinkedList<ExecInterceptorEntry> execInterceptors;
 
+    private Supplier<String> exchangeIdGenerator;
     private HttpRoutePlanner routePlanner;
     private RedirectStrategy redirectStrategy;
     private HttpRequestRetryStrategy retryStrategy;
@@ -564,6 +567,17 @@ public class H2AsyncClientBuilder {
     }
 
     /**
+     * Sets exchange ID generator instance.
+     *
+     * @return this instance.
+     * @since 5.7
+     */
+    public final H2AsyncClientBuilder setExchangeIdGenerator(final Supplier<String> exchangeIdGenerator) {
+        this.exchangeIdGenerator = exchangeIdGenerator;
+        return this;
+    }
+
+    /**
      * Sets {@link HttpRoutePlanner} instance.
      *
      * @return this instance.
@@ -769,13 +783,8 @@ public class H2AsyncClientBuilder {
 
         String userAgentCopy = this.userAgent;
         if (userAgentCopy == null) {
-            if (systemProperties) {
-                userAgentCopy = System.getProperty("http.agent", null);
-            }
-            if (userAgentCopy == null) {
-                userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
-                        "org.apache.hc.client5", getClass());
-            }
+            userAgentCopy = VersionInfo.getSoftwareInfo("Apache-HttpAsyncClient",
+                    "org.apache.hc.client5", getClass());
         }
 
         final HttpProcessorBuilder b = HttpProcessorBuilder.create();
@@ -858,6 +867,11 @@ public class H2AsyncClientBuilder {
             execChainDefinition.addFirst(
                     new AsyncHttpRequestRetryExec(retryStrategyCopy),
                     ChainElement.RETRY.name());
+        }
+
+        Supplier<String> exchangeIdGeneratorCopy = this.exchangeIdGenerator;
+        if (exchangeIdGeneratorCopy == null) {
+            exchangeIdGeneratorCopy = DefaultExchangeIdGenerator.INSTANCE;
         }
 
         HttpRoutePlanner routePlannerCopy = this.routePlanner;
@@ -988,6 +1002,7 @@ public class H2AsyncClientBuilder {
                 pushConsumerRegistry,
                 threadFactory != null ? threadFactory : new DefaultThreadFactory("httpclient-main", true),
                 connPool,
+                exchangeIdGeneratorCopy,
                 routePlannerCopy,
                 cookieSpecRegistryCopy,
                 authSchemeRegistryCopy,

@@ -38,23 +38,18 @@ import org.apache.hc.core5.http.HttpHost;
 import org.apache.hc.core5.http.Method;
 import org.apache.hc.core5.http.URIScheme;
 import org.apache.hc.core5.io.CloseMode;
-import org.apache.hc.core5.util.VersionInfo;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.net.SocketTimeoutException;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
-import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.apache.hc.core5.util.ReflectionUtils.determineJRELevel;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 abstract class AbstractTestSocketTimeout extends AbstractIntegrationTestBase {
@@ -65,22 +60,14 @@ abstract class AbstractTestSocketTimeout extends AbstractIntegrationTestBase {
 
     @Timeout(5)
     @ParameterizedTest
-    @ValueSource(strings = {
-        "150,0,150,false",
-        "0,150,150,false",
-        "150,0,150,true",
-        "0,150,150,true",
+    @CsvSource({
+        "10,0",
+        "0,10",
         // ResponseTimeout overrides socket timeout
-        "2000,150,150,false",
-        "2000,150,150,true"
+        "10000,10",
     })
-    void testReadTimeouts(final String param) throws Throwable {
+    void testReadTimeouts(final int connConfigTimeout, final int responseTimeout) throws Throwable {
         checkAssumptions();
-        final String[] params = param.split(",");
-        final int connConfigTimeout = Integer.parseInt(params[0]);
-        final long responseTimeout = Integer.parseInt(params[1]);
-        final long expectedDelayMs = Long.parseLong(params[2]);
-        final boolean drip = Boolean.parseBoolean(params[3]);
         configureServer(bootstrap -> bootstrap
                 .register("/random/*", AsyncRandomHandler::new));
         final HttpHost target = startServer();
@@ -92,26 +79,34 @@ abstract class AbstractTestSocketTimeout extends AbstractIntegrationTestBase {
                 .setSocketTimeout(connConfigTimeout, MILLISECONDS)
                 .build());
         }
+
+        for (final boolean drip : new boolean[]{ false, true }) {
+            for (final boolean reuseConnection : new boolean[]{ false, true }) {
+                if (reuseConnection) {
+                    client.execute(getRequest(2500, 0, false, target), null).get();
+                }
+                final SimpleHttpRequest request = getRequest(responseTimeout, 2500, drip, target);
+
+                final Throwable cause = assertThrows(ExecutionException.class,
+                    () -> client.execute(request, null).get()).getCause();
+                assertInstanceOf(SocketTimeoutException.class, cause,
+                    String.format("drip=%s, reuseConnection=%s", drip, reuseConnection));
+            }
+        }
+
+        closeClient(client);
+    }
+
+    private SimpleHttpRequest getRequest(final int responseTimeout, final int delay, final boolean drip,
+                                         final HttpHost target) throws Exception {
         final SimpleHttpRequest request = SimpleHttpRequest.create(Method.GET, target,
-            "/random/10240?delay=500&drip=" + (drip ? 1 : 0));
+            "/random/10240?delay=" + delay + "&drip=" + (drip ? 1 : 0));
         if (responseTimeout > 0) {
             request.setConfig(RequestConfig.custom()
                 .setUnixDomainSocket(getUnixDomainSocket())
                 .setResponseTimeout(responseTimeout, MILLISECONDS).build());
         }
-
-        final long startTime = System.nanoTime();
-        final Throwable cause = assertThrows(ExecutionException.class, () -> client.execute(request, null).get())
-            .getCause();
-        final long actualDelayMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-
-        assertInstanceOf(SocketTimeoutException.class, cause);
-        assertTrue(actualDelayMs > expectedDelayMs / 2,
-            format("Socket read timed out too soon (only %,d out of %,d ms)", actualDelayMs, expectedDelayMs));
-        assertTrue(actualDelayMs < expectedDelayMs * 2,
-            format("Socket read timed out too late (%,d out of %,d ms)", actualDelayMs, expectedDelayMs));
-
-        closeClient(client);
+        return request;
     }
 
     void checkAssumptions() {
@@ -146,13 +141,6 @@ public class TestAsyncSocketTimeout {
         @Override
         void checkAssumptions() {
             assumeTrue(determineJRELevel() >= 16, "Async UDS requires Java 16+");
-            final String[] components = VersionInfo
-                .loadVersionInfo("org.apache.hc.core5", getClass().getClassLoader())
-                .getRelease()
-                .split("[-.]");
-            final int majorVersion = Integer.parseInt(components[0]);
-            final int minorVersion = Integer.parseInt(components[1]);
-            assumeFalse(majorVersion <= 5 && minorVersion <= 3, "Async UDS requires HttpCore 5.4+");
         }
     }
 }

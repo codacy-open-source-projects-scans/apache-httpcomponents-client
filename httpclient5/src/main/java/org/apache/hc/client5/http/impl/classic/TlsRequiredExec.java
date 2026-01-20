@@ -24,22 +24,36 @@
  * <http://www.apache.org/>.
  *
  */
-package org.apache.hc.client5.http.impl;
+package org.apache.hc.client5.http.impl.classic;
 
-import org.junit.jupiter.api.Assertions;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.parallel.Isolated;
+import java.io.IOException;
 
-@Isolated
-class ExecSupportTest {
+import org.apache.hc.client5.http.HttpRoute;
+import org.apache.hc.client5.http.UnsupportedSchemeException;
+import org.apache.hc.client5.http.classic.ExecChain;
+import org.apache.hc.client5.http.classic.ExecChainHandler;
+import org.apache.hc.core5.annotation.Internal;
+import org.apache.hc.core5.http.ClassicHttpRequest;
+import org.apache.hc.core5.http.ClassicHttpResponse;
+import org.apache.hc.core5.http.HttpException;
 
-    @Test
-    void testGetNextExchangeId() {
-        final long base = ExecSupport.getNextExecNumber();
-        for (int i = 1; i <= 1_000_000; i++) {
-            Assertions.assertEquals(
-                String.format("ex-%010d", i + base),
-                ExecSupport.getNextExchangeId());
+/**
+ * Internal exec interceptor that enforces the "TLS required" client policy.
+ *
+ */
+@Internal
+final class TlsRequiredExec implements ExecChainHandler {
+
+    @Override
+    public ClassicHttpResponse execute(
+            final ClassicHttpRequest request,
+            final ExecChain.Scope scope,
+            final ExecChain chain) throws IOException, HttpException {
+
+        final HttpRoute route = scope.route;
+        if (route != null && !route.isSecure()) {
+            throw new UnsupportedSchemeException("Cleartext HTTP is disabled (TLS required)");
         }
+        return chain.proceed(request, scope);
     }
 }

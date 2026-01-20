@@ -262,7 +262,7 @@ class LoggingIOSession implements IOSession {
 
     }
 
-    private void logData(final ByteBuffer data, final String prefix) {
+    void logData(final ByteBuffer data, final String prefix) {
         final byte[] line = new byte[16];
         final StringBuilder buf = new StringBuilder();
         while (data.hasRemaining()) {
@@ -273,7 +273,7 @@ class LoggingIOSession implements IOSession {
 
             for (int i = 0; i < chunk; i++) {
                 final char ch = (char) line[i];
-                if (ch > Chars.SP && ch <= Chars.DEL) {
+                if (ch > Chars.SP && ch < Chars.DEL) {
                     buf.append(ch);
                 } else if (Character.isWhitespace(ch)) {
                     buf.append(' ');

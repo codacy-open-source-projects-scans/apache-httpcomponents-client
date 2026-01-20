@@ -63,26 +63,26 @@
     <maven.compiler.source>1.8</maven.compiler.source>
     <maven.compiler.target>1.8</maven.compiler.target>
     <httpcore.version>5.4</httpcore.version>
-    <log4j.version>2.25.2</log4j.version>
+    <log4j.version>2.25.3</log4j.version>
     <brotli4j.version>1.20.0</brotli4j.version>
     <conscrypt.version>2.5.2</conscrypt.version>
     <ehcache.version>3.11.1</ehcache.version>
     <memcached.version>2.12.3</memcached.version>
     <slf4j.version>1.7.36</slf4j.version>
-    <junit.version>5.13.3</junit.version>
+    <junit.version>5.14.2</junit.version>
     <hamcrest.version>3.0</hamcrest.version>
     <mockito.version>4.11.0</mockito.version>
     <hc.stylecheck.version>1</hc.stylecheck.version>
     <rxjava3.version>3.1.12</rxjava3.version>
-    <testcontainers.version>1.21.3</testcontainers.version>
+    <testcontainers.version>1.21.4</testcontainers.version>
     <junixsocket.version>2.10.1</junixsocket.version>
     <api.comparison.version>5.6</api.comparison.version>
     <hc.animal-sniffer.signature.ignores>javax.net.ssl.SSLEngine,javax.net.ssl.SSLParameters,java.nio.ByteBuffer,java.nio.CharBuffer,jdk.net.ExtendedSocketOptions,jdk.net.Sockets</hc.animal-sniffer.signature.ignores>
     <commons.compress.version>1.28.0</commons.compress.version>
     <zstd.jni.version>1.5.7-6</zstd.jni.version>
-    <micrometer.version>1.15.5</micrometer.version>
-    <micrometer.tracing.version>1.5.5</micrometer.tracing.version>
-    <otel.version>1.55.0</otel.version>     <!-- already used elsewhere -->
+    <micrometer.version>1.16.2</micrometer.version>
+    <micrometer.tracing.version>1.6.2</micrometer.tracing.version>
+    <otel.version>1.58.0</otel.version>     <!-- already used elsewhere -->
     <commons-compress.version>1.26.2</commons-compress.version>
     <caffeine.version>2.9.3</caffeine.version>  <!-- java 8. current version 3.2.3 -->
   </properties>
@@ -93,6 +93,12 @@
         <groupId>org.apache.httpcomponents.core5</groupId>
         <artifactId>httpcore5</artifactId>
         <version>${httpcore.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.httpcomponents.core5</groupId>
+        <artifactId>httpcore5</artifactId>
+        <version>${httpcore.version}</version>
+        <classifier>tests</classifier>
       </dependency>
       <dependency>
         <groupId>org.apache.httpcomponents.core5</groupId>
@@ -209,7 +215,7 @@
       <dependency>
         <groupId>commons-io</groupId>
         <artifactId>commons-io</artifactId>
-        <version>2.20.0</version>
+        <version>2.21.0</version>
       </dependency>
       <dependency>
         <groupId>org.apache.commons</groupId>
@@ -344,6 +350,7 @@
       <plugin>
         <groupId>com.github.siom79.japicmp</groupId>
         <artifactId>japicmp-maven-plugin</artifactId>
+        <version>0.25.4</version>
         <configuration>
           <oldVersion>
             <dependency>
@@ -366,7 +373,6 @@
             <excludes>
               <exclude>@org.apache.hc.core5.annotation.Internal</exclude>
             </excludes>
-            <ignoreMissingClasses>true</ignoreMissingClasses>
             <skipXmlReport>true</skipXmlReport>
             <skipHtmlReport>false</skipHtmlReport>
             <skipDiffReport>false</skipDiffReport>
@@ -384,25 +390,24 @@
       <plugin>
         <groupId>org.apache.rat</groupId>
         <artifactId>apache-rat-plugin</artifactId>
+        <version>0.17</version>
         <executions>
           <execution>
             <phase>verify</phase>
+            <inherited>false</inherited>
             <goals>
               <goal>check</goal>
             </goals>
           </execution>
         </executions>
-        <configuration>
-          <excludes>
-            <exclude>src/docbkx/resources/**</exclude>
-            <exclude>src/test/resources/*.truststore</exclude>
-            <exclude>src/test/resources/*.serialized</exclude>
-            <exclude>.checkstyle</exclude>
-            <exclude>.externalToolBuilders/**</exclude>
-            <exclude>maven-eclipse.xml</exclude>
-            <exclude>**/serial</exclude>
-            <exclude>**/index.txt</exclude>
-          </excludes>
+        <configuration combine.self="override">
+          <excludeSubProjects>false</excludeSubProjects>
+          <inputExcludes>
+            <inputExclude>**/*.pem</inputExclude>
+            <inputExclude>**/index.txt</inputExclude>
+            <inputExclude>**/serial</inputExclude>
+            <inputExclude>**/effective_tld_names.dat</inputExclude>
+          </inputExcludes>
         </configuration>
       </plugin>
       <plugin>
@@ -518,6 +523,14 @@
           </reportSet>
         </reportSets>
         <configuration>
+          <newVersion>
+            <dependency>
+              <groupId>${project.groupId}</groupId>
+              <artifactId>${project.artifactId}</artifactId>
+              <version>${project.version}</version>
+              <type>jar</type>
+            </dependency>
+          </newVersion>
           <oldVersion>
             <dependency>
               <groupId>${project.groupId}</groupId>
@@ -531,7 +544,6 @@
               <exclude>@org.apache.hc.core5.annotation.Internal</exclude>
             </excludes>
             <reportOnlyFilename>true</reportOnlyFilename>
-            <ignoreMissingClasses>true</ignoreMissingClasses>
           </parameter>
         </configuration>
       </plugin>
